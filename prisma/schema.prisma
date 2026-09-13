@@ -1,0 +1,410 @@
+// Schema NanaPay - PostgreSQL
+// Base sur le schema SQL fourni dans le cahier des charges (users, clients, merchants,
+// shops, products, product_media, orders, savings_plans, savings_deposits, bank_credits,
+// merchant_payouts, order_deliveries), complete par les tables techniques demandees dans
+// le cahier de taches Backend (audit_logs, notifications, refresh_tokens, idempotency_keys).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  CLIENT
+  COMMERCANT
+  BANQUE
+}
+
+// Ajoute par rapport au schema SQL initial (qui n'avait que is_active BOOLEAN) : un simple
+// booleen ne permet pas de distinguer "en attente de revue" de "rejete par l'Admin" pour
+// GET /admin/clients|merchants/pending. isActive reste la porte d'entree effective au login.
+enum AccountStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum BankDossierStatus {
+  NON_SOUMIS
+  EN_ATTENTE
+  VALIDE
+  REJETTE
+}
+
+enum PaymentMode {
+  EPARGNE
+  CREDIT_BANCAIRE
+}
+
+enum OrderStatus {
+  EN_COURS
+  PRET_A_LIVRER
+  LIVRE
+  ECHEC_PENALISE
+  ANNULE
+}
+
+enum MediaType {
+  PHOTO
+  SPOT_PUB
+}
+
+enum DepositStatus {
+  SUCCESS
+  FAILED
+}
+
+enum ApprovalStatus {
+  EN_ATTENTE
+  APPROUVE
+  REJETTE
+}
+
+enum TransferStatus {
+  NON_EFFECTUE
+  VIREMENT_BANQUE_EFFECTUE
+  PAYE_AU_COMMERCANT
+}
+
+enum PayoutChannel {
+  ORANGE_MONEY
+  CORIS_MONEY
+  VIREMENT_BANCAIRE
+}
+
+enum DeliveryVerificationStatus {
+  CONFIRME
+  INVALIDE
+}
+
+enum MobileMoneyOperator {
+  ORANGE_MONEY
+  CORIS_MONEY
+}
+
+// ------------------------------------------------------------------
+// 1. UTILISATEURS
+// ------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  role         UserRole
+  isActive     Boolean       @default(false) @map("is_active")
+  accountStatus AccountStatus @default(PENDING) @map("account_status")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  client        Client?
+  merchant      Merchant?
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  bankCredits   BankCredit[] @relation("BankCreditsHandledByBankUser")
+
+  @@map("users")
+}
+
+// ------------------------------------------------------------------
+// 2. CLIENTS
+// ------------------------------------------------------------------
+
+model Client {
+  id                    String            @id @default(uuid())
+  userId                String            @unique @map("user_id")
+  firstName             String            @map("first_name")
+  lastName              String            @map("last_name")
+  phoneNumber           String            @map("phone_number")
+  cnibRectoUrl          String            @map("cnib_recto_url")
+  cnibVersoUrl          String            @map("cnib_verso_url")
+  city                  String
+  township              String
+  sector                String
+  employer              String?
+  registrationNumber    String?           @map("registration_number")
+  bankDossierStatus     BankDossierStatus @default(NON_SOUMIS) @map("bank_dossier_status")
+  bankAuthorizationUrl  String?           @map("bank_authorization_url")
+  paySlipsUrl           String?           @map("pay_slips_url")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@map("clients")
+}
+
+// ------------------------------------------------------------------
+// 3. COMMERCANTS
+// ------------------------------------------------------------------
+
+model Merchant {
+  id                   String   @id @default(uuid())
+  userId               String   @unique @map("user_id")
+  firstName            String   @map("first_name")
+  lastName             String   @map("last_name")
+  cnibRectoUrl         String   @map("cnib_recto_url")
+  cnibVersoUrl         String   @map("cnib_verso_url")
+  ifuRccmNumber        String   @map("ifu_rccm_number")
+  city                 String
+  orangeMoneyNumber    String?  @map("orange_money_number")
+  corisMoneyNumber     String?  @map("coris_money_number")
+  defaultPayoutAccount PayoutChannel @map("default_payout_account")
+  isVerified           Boolean  @default(false) @map("is_verified")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shop               Shop?
+  merchantPayouts    MerchantPayout[]
+  orderDeliveries    OrderDelivery[]
+
+  @@map("merchants")
+}
+
+// ------------------------------------------------------------------
+// 4. BOUTIQUES
+// ------------------------------------------------------------------
+
+model Shop {
+  id                  String   @id @default(uuid())
+  // Un commercant gere une seule boutique (POST/PUT /merchant/shop, sans :id) : contrainte
+  // ajoutee par rapport au schema SQL initial, qui n'avait pas d'UNIQUE sur merchant_id.
+  merchantId          String   @unique @map("merchant_id")
+  shopName            String   @map("shop_name")
+  city                String
+  township             String
+  neighborhood        String
+  addressDescription  String?  @map("address_description")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  merchant Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@map("shops")
+}
+
+// ------------------------------------------------------------------
+// 5. ARTICLES
+// ------------------------------------------------------------------
+
+model Product {
+  id             String   @id @default(uuid())
+  shopId         String   @map("shop_id")
+  title          String
+  description    String?
+  price          Decimal  @db.Decimal(12, 2)
+  initialStock   Int      @map("initial_stock")
+  remainingStock Int      @map("remaining_stock")
+  isVisible      Boolean  @default(true) @map("is_visible")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  shop   Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  media  ProductMedia[]
+  orders Order[]
+
+  @@map("products")
+}
+
+model ProductMedia {
+  id        String    @id @default(uuid())
+  productId String    @map("product_id")
+  mediaUrl  String    @map("media_url")
+  mediaType MediaType @map("media_type")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("product_media")
+}
+
+// ------------------------------------------------------------------
+// 6. COMMANDES / DOSSIERS DE PAIEMENT
+// ------------------------------------------------------------------
+
+model Order {
+  id                 String      @id @default(uuid())
+  clientId           String      @map("client_id")
+  productId          String      @map("product_id")
+  paymentMode        PaymentMode @map("payment_mode")
+  totalAmount        Decimal     @map("total_amount") @db.Decimal(12, 2)
+  maxDurationMonths  Int         @map("max_duration_months")
+  extendedMonths     Int         @default(0) @map("extended_months")
+  status             OrderStatus @default(EN_COURS)
+  qrCodeToken        String?     @unique @map("qr_code_token")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  client         Client          @relation(fields: [clientId], references: [id])
+  product        Product         @relation(fields: [productId], references: [id])
+  savingsPlan    SavingsPlan?
+  bankCredit     BankCredit?
+  merchantPayout MerchantPayout?
+  delivery       OrderDelivery?
+
+  @@map("orders")
+}
+
+// ------------------------------------------------------------------
+// 7. EPARGNES
+// ------------------------------------------------------------------
+
+model SavingsPlan {
+  id                    String   @id @default(uuid())
+  orderId               String   @unique @map("order_id")
+  targetAmount          Decimal  @map("target_amount") @db.Decimal(12, 2)
+  currentSavedAmount    Decimal  @default(0.00) @map("current_saved_amount") @db.Decimal(12, 2)
+  minInstallmentAmount  Decimal  @map("min_installment_amount") @db.Decimal(12, 2)
+  dueDate               DateTime @map("due_date") @db.Date
+  isCompleted           Boolean  @default(false) @map("is_completed")
+  penaltyApplied        Boolean  @default(false) @map("penalty_applied")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  order    Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  deposits SavingsDeposit[]
+
+  @@map("savings_plans")
+}
+
+model SavingsDeposit {
+  id                    String        @id @default(uuid())
+  savingsPlanId         String        @map("savings_plan_id")
+  amount                Decimal       @db.Decimal(12, 2)
+  transactionReference  String        @unique @map("transaction_reference")
+  operator              MobileMoneyOperator
+  status                DepositStatus @default(SUCCESS)
+  depositDate           DateTime      @default(now()) @map("deposit_date")
+
+  savingsPlan SavingsPlan @relation(fields: [savingsPlanId], references: [id], onDelete: Cascade)
+
+  @@map("savings_deposits")
+}
+
+// ------------------------------------------------------------------
+// 8. CREDITS BANCAIRES
+// ------------------------------------------------------------------
+
+model BankCredit {
+  id                     String         @id @default(uuid())
+  orderId                String         @unique @map("order_id")
+  bankId                 String         @map("bank_id")
+  monthlyInstallment     Decimal        @map("monthly_installment") @db.Decimal(12, 2)
+  bankCommissionAmount   Decimal        @map("bank_commission_amount") @db.Decimal(12, 2)
+  totalAmountToWire      Decimal        @map("total_amount_to_wire") @db.Decimal(12, 2)
+  approvalStatus         ApprovalStatus @default(EN_ATTENTE) @map("approval_status")
+  transferStatus         TransferStatus @default(NON_EFFECTUE) @map("transfer_status")
+  approvalDate           DateTime?      @map("approval_date")
+  createdAt              DateTime       @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  bank  User  @relation("BankCreditsHandledByBankUser", fields: [bankId], references: [id])
+
+  @@map("bank_credits")
+}
+
+// ------------------------------------------------------------------
+// 9. TRANSACTIONS & REVERSEMENTS COMMERCANTS
+// ------------------------------------------------------------------
+
+model MerchantPayout {
+  id                     String        @id @default(uuid())
+  orderId                String        @unique @map("order_id")
+  merchantId             String        @map("merchant_id")
+  grossAmount            Decimal       @map("gross_amount") @db.Decimal(12, 2)
+  nanapayCommissionRate  Decimal       @map("nanapay_commission_rate") @db.Decimal(5, 2)
+  commissionAmount       Decimal       @map("commission_amount") @db.Decimal(12, 2)
+  netAmountPaid          Decimal       @map("net_amount_paid") @db.Decimal(12, 2)
+  payoutChannel          PayoutChannel @map("payout_channel")
+  payoutReference        String?       @map("payout_reference")
+  payoutDate             DateTime      @default(now()) @map("payout_date")
+
+  order    Order    @relation(fields: [orderId], references: [id])
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  @@map("merchant_payouts")
+}
+
+// ------------------------------------------------------------------
+// 10. RETRAITS EN BOUTIQUE (Scan QR)
+// ------------------------------------------------------------------
+
+model OrderDelivery {
+  id                   String                     @id @default(uuid())
+  orderId              String                     @unique @map("order_id")
+  scannedByMerchantId  String                     @map("scanned_by_merchant_id")
+  deliveryDate         DateTime                   @default(now()) @map("delivery_date")
+  verificationStatus   DeliveryVerificationStatus @default(CONFIRME) @map("verification_status")
+
+  order            Order    @relation(fields: [orderId], references: [id])
+  scannedByMerchant Merchant @relation(fields: [scannedByMerchantId], references: [id])
+
+  @@map("order_deliveries")
+}
+
+// ------------------------------------------------------------------
+// TABLES TECHNIQUES (ajoutees - audit, notifications, sessions, idempotence)
+// ------------------------------------------------------------------
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  metadata   Json?
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  title     String
+  message   String
+  isRead    Boolean  @default(false) @map("is_read")
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model IdempotencyKey {
+  id           String   @id @default(uuid())
+  key          String   @unique
+  scope        String
+  responseBody Json?    @map("response_body")
+  statusCode   Int?     @map("status_code")
+  createdAt    DateTime @default(now()) @map("created_at")
+  expiresAt    DateTime @map("expires_at")
+
+  @@map("idempotency_keys")
+}

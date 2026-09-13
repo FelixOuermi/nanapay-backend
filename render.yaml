@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: nanapay-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build && npx prisma migrate deploy
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      - key: BCRYPT_SALT_ROUNDS
+        value: 12
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: MAX_UPLOAD_SIZE_MB
+        value: 5
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 900000
+      - key: RATE_LIMIT_MAX_AUTH
+        value: 10
+      - key: RATE_LIMIT_MAX_SENSITIVE
+        value: 30
+      - key: RATE_LIMIT_MAX_WEBHOOK
+        value: 120

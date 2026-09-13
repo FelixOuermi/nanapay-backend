@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.claude/
+uploads/private/*
+uploads/public/*
+!uploads/private/.gitkeep
+!uploads/public/.gitkeep
+*.log
+coverage/
+.DS_Store
