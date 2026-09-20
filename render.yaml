@@ -3,7 +3,7 @@ services:
     name: nanapay-backend
     runtime: node
     plan: free
-    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy
+    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy && npm run seed
     startCommand: npm start
     envVars:
       - key: NODE_ENV
@@ -14,6 +14,10 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
+      - key: PAYMENT_WEBHOOK_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
       - key: JWT_ACCESS_EXPIRES_IN
         value: 15m
       - key: JWT_REFRESH_EXPIRES_IN

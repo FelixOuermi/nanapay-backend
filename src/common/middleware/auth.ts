@@ -9,6 +9,7 @@ export interface AccessTokenPayload {
   role: UserRole;
   clientId?: string;
   merchantId?: string;
+  bankId?: string;
 }
 
 // Verifie le JWT d'acces et attache l'utilisateur authentifie a req.user.
@@ -30,6 +31,7 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction) {
       role: payload.role,
       clientId: payload.clientId,
       merchantId: payload.merchantId,
+      bankId: payload.bankId,
     };
     next();
   } catch {

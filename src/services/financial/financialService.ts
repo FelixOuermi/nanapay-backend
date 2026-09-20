@@ -1,77 +1,71 @@
 import {
   AMOUNT_TIER_1_MAX,
   AMOUNT_TIER_2_MAX,
-  SAVINGS_TIERS,
-  SAVINGS_EXTENSION_MAX_MONTHS,
-  SAVINGS_PENALTY_RATE,
-  SAVINGS_REFUND_RATE,
-  SAVINGS_COMMISSION_RATE_TIER_1,
-  SAVINGS_COMMISSION_RATE_TIER_2,
-  SAVINGS_COMMISSION_RATE_TIER_3,
-  CREDIT_TIER_1_MAX_MONTHS,
-  CREDIT_TIER_2_MAX_MONTHS,
-  CREDIT_EXTRA_MONTHS_PER_BRACKET,
-  CREDIT_BRACKET_SIZE,
-  CREDIT_BANK_WIRE_COMMISSION_RATE,
-  CREDIT_MERCHANT_COMMISSION_RATE,
+  DEFAULT_FINANCIAL_PARAMS,
+  FinancialParams,
 } from "./financial.constants";
 
 /**
- * Service financier centralise NanaPay.
- *
- * Toute la logique de calcul (durees, versements minimums, commissions, penalites,
- * montants a virer) DOIT passer par ce service. Les controleurs/routes ne doivent
- * jamais recalculer ou recopier un taux/seuil localement (cf. cahier des taches, section 12).
+ * Service financier centralise NanoPay : fonctions pures. Toute regle de calcul (durees,
+ * versements minimums, commissions, penalites, montants a virer) passe par ici. Le
+ * frontend n'est jamais source de verite pour les regles financieres (cahier, section 1).
+ * Les parametres viennent du back-office (settingsService) ; a defaut, les valeurs par defaut.
+ * Tous les montants sont des entiers FCFA.
  */
+
+const round = (value: number): number => Math.round(value);
+
+function assertPositivePrice(price: number): void {
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new Error("Le prix de l'article doit etre positif");
+  }
+}
 
 // ------------------------------------------------------------------
 // EPARGNE
 // ------------------------------------------------------------------
 
 export interface SavingsTerms {
-  minInstallmentAmount: number;
+  minInstallment: number;
   maxDurationMonths: number;
 }
 
-/** Determine versement minimum + duree max autorises selon le prix de l'article. */
-export function getSavingsTerms(articlePrice: number): SavingsTerms {
-  if (articlePrice <= 0) {
-    throw new Error("Le prix de l'article doit etre positif");
+export function getSavingsTerms(price: number, params: FinancialParams = DEFAULT_FINANCIAL_PARAMS): SavingsTerms {
+  assertPositivePrice(price);
+  const tiers = params.savingsTiers;
+  const tier = tiers.find((t) => t.maxAmount === null || price <= t.maxAmount) ?? tiers[tiers.length - 1];
+  return { minInstallment: tier.minInstallment, maxDurationMonths: tier.maxDurationMonths };
+}
+
+/** Prolongation autorisee tant que le cumul reste <= au maximum (2 mois). */
+export function canExtendSavings(
+  currentExtensionMonths: number,
+  requestedMonths: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): boolean {
+  return requestedMonths > 0 && currentExtensionMonths + requestedMonths <= params.savingsExtensionMaxMonths;
+}
+
+/**
+ * Un versement est valide s'il atteint le minimum du palier, ou s'il solde exactement
+ * le reste a epargner (dernier versement, potentiellement inferieur au minimum), et
+ * s'il ne depasse pas le reste a epargner.
+ */
+export function validateSavingsDeposit(
+  amount: number,
+  remaining: number,
+  minInstallment: number
+): { valid: true } | { valid: false; reason: string } {
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    return { valid: false, reason: "Montant invalide" };
   }
-
-  const tier = SAVINGS_TIERS.find((t) => articlePrice <= t.maxAmount) ?? SAVINGS_TIERS[SAVINGS_TIERS.length - 1];
-
-  return {
-    minInstallmentAmount: tier.minInstallment,
-    maxDurationMonths: tier.maxDurationMonths,
-  };
-}
-
-/** Extension d'echeance : autorisee uniquement si le total (base + extensions) reste <= max. */
-export function canExtendSavingsDeadline(currentExtendedMonths: number, requestedExtraMonths: number): boolean {
-  return currentExtendedMonths + requestedExtraMonths <= SAVINGS_EXTENSION_MAX_MONTHS;
-}
-
-/** Taux de commission HT applique par NanaPay sur le reversement Epargne au commercant. */
-export function getSavingsCommissionRate(articlePrice: number): number {
-  if (articlePrice < AMOUNT_TIER_1_MAX) return SAVINGS_COMMISSION_RATE_TIER_1;
-  if (articlePrice < AMOUNT_TIER_2_MAX) return SAVINGS_COMMISSION_RATE_TIER_2;
-  return SAVINGS_COMMISSION_RATE_TIER_3;
-}
-
-export interface SavingsPayout {
-  commissionRate: number;
-  commissionAmount: number;
-  netAmountPaid: number;
-}
-
-/** Montant reverse au commercant a la fin d'une Epargne = montant epargne - commission HT. */
-export function computeSavingsPayout(articlePrice: number, savedAmount: number): SavingsPayout {
-  const commissionRate = getSavingsCommissionRate(articlePrice);
-  const commissionAmount = round2(savedAmount * commissionRate);
-  const netAmountPaid = round2(savedAmount - commissionAmount);
-
-  return { commissionRate, commissionAmount, netAmountPaid };
+  if (amount > remaining) {
+    return { valid: false, reason: "Montant superieur au reste a epargner" };
+  }
+  if (amount < minInstallment && amount !== remaining) {
+    return { valid: false, reason: `Versement inferieur au minimum de ${minInstallment} FCFA` };
+  }
+  return { valid: true };
 }
 
 export interface SavingsPenalty {
@@ -79,99 +73,110 @@ export interface SavingsPenalty {
   refundAmount: number;
 }
 
-/**
- * Regle actuelle (confirmee) en cas de depassement definitif du delai d'Epargne
- * (delai de base + extension eventuelle, non regularise) :
- *  - penalite de 15% sur la somme totale epargnee
- *  - remboursement de 85% des cotisations au client via Mobile Money
- *  - le compte client est ensuite bloque temporairement (gere hors de ce calcul)
- */
-export function computeSavingsPenalty(savedAmount: number): SavingsPenalty {
-  return {
-    penaltyAmount: round2(savedAmount * SAVINGS_PENALTY_RATE),
-    refundAmount: round2(savedAmount * SAVINGS_REFUND_RATE),
-  };
+/** Echec apres duree initiale + prolongation : penalite (15 %) et remboursement du reste (85 %). */
+export function computeSavingsPenalty(
+  savedAmount: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): SavingsPenalty {
+  const penaltyAmount = round(savedAmount * params.savingsPenaltyRate);
+  return { penaltyAmount, refundAmount: savedAmount - penaltyAmount };
 }
 
-// ------------------------------------------------------------------
-// CREDIT BANCAIRE
-// ------------------------------------------------------------------
-
-/**
- * Duree maximale autorisee (en mois) pour un Credit Bancaire selon le prix de l'article :
- *  - 0 a 50 000 FCFA : 8 mois
- *  - 50 000 a 100 000 FCFA : 12 mois
- *  - au-dela : +6 mois par tranche entamee de 50 000 FCFA, arrondi vers le haut
- */
-export function computeMaxCreditDurationMonths(articlePrice: number): number {
-  if (articlePrice <= 0) {
-    throw new Error("Le prix de l'article doit etre positif");
-  }
-
-  if (articlePrice <= AMOUNT_TIER_1_MAX) {
-    return CREDIT_TIER_1_MAX_MONTHS;
-  }
-
-  if (articlePrice <= AMOUNT_TIER_2_MAX) {
-    return CREDIT_TIER_2_MAX_MONTHS;
-  }
-
-  const amountAboveTier2 = articlePrice - AMOUNT_TIER_2_MAX;
-  const extraBrackets = Math.ceil(amountAboveTier2 / CREDIT_BRACKET_SIZE);
-
-  return CREDIT_TIER_2_MAX_MONTHS + extraBrackets * CREDIT_EXTRA_MONTHS_PER_BRACKET;
-}
-
-/** Le Backend est seul responsable de la validation de duree ; il ne fait jamais confiance au Front. */
-export function assertValidCreditDuration(articlePrice: number, requestedMonths: number): void {
-  const maxAllowed = computeMaxCreditDurationMonths(articlePrice);
-
-  if (requestedMonths <= 0 || requestedMonths > maxAllowed) {
-    throw new Error(
-      `Duree de credit invalide : ${requestedMonths} mois demandes, maximum autorise ${maxAllowed} mois pour ${articlePrice} FCFA`
-    );
-  }
-}
-
-export interface CreditWireDetails {
-  bankCommissionAmount: number;
-  totalAmountToWire: number;
-}
-
-/** Montant que la Banque doit virer a NanaPay = prix article + 2% (commission NanaPay). */
-export function computeBankWireAmount(articlePrice: number): CreditWireDetails {
-  const bankCommissionAmount = round2(articlePrice * CREDIT_BANK_WIRE_COMMISSION_RATE);
-  return {
-    bankCommissionAmount,
-    totalAmountToWire: round2(articlePrice + bankCommissionAmount),
-  };
-}
-
-export interface CreditMerchantPayout {
+export interface MerchantSettlementAmounts {
   commissionRate: number;
   commissionAmount: number;
-  netAmountPaid: number;
+  netAmount: number;
 }
+
+export function getSavingsCommissionRate(price: number, params: FinancialParams = DEFAULT_FINANCIAL_PARAMS): number {
+  const rates = params.savingsCommissionRates;
+  if (price < AMOUNT_TIER_1_MAX) return rates.tier1;
+  if (price < AMOUNT_TIER_2_MAX) return rates.tier2;
+  return rates.tier3;
+}
+
+/** Reglement commercant pour une commande financee par epargne ou coffre. */
+export function computeSavingsSettlement(
+  price: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): MerchantSettlementAmounts {
+  const commissionRate = getSavingsCommissionRate(price, params);
+  const commissionAmount = round(price * commissionRate);
+  return { commissionRate, commissionAmount, netAmount: price - commissionAmount };
+}
+
+// ------------------------------------------------------------------
+// CREDIT (et duree du Coffre, alignee sur le meme bareme)
+// ------------------------------------------------------------------
 
 /**
- * Montant reverse au commercant apres validation du Credit Bancaire :
- * commission NanaPay de 4% calculee sur le prix de l'article (pas sur le montant vire par la banque).
- * La part issue de l'interet bancaire est geree separement (revenu banque, hors reversement commercant).
+ * <= 50 000 : 8 mois ; 50 000 - 100 000 : 12 mois ; au-dela, +6 mois par tranche
+ * (entamee) supplementaire de 50 000 FCFA.
  */
-export function computeCreditMerchantPayout(articlePrice: number): CreditMerchantPayout {
-  const commissionAmount = round2(articlePrice * CREDIT_MERCHANT_COMMISSION_RATE);
-  return {
-    commissionRate: CREDIT_MERCHANT_COMMISSION_RATE,
-    commissionAmount,
-    netAmountPaid: round2(articlePrice - commissionAmount),
-  };
+export function computeMaxCreditDurationMonths(
+  price: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): number {
+  assertPositivePrice(price);
+  if (price <= AMOUNT_TIER_1_MAX) return params.creditTier1MaxMonths;
+  if (price <= AMOUNT_TIER_2_MAX) return params.creditTier2MaxMonths;
+  const extraBrackets = Math.ceil((price - AMOUNT_TIER_2_MAX) / params.creditBracketSize);
+  return params.creditTier2MaxMonths + extraBrackets * params.creditExtraMonthsPerBracket;
+}
+
+/** Le backend valide toujours la duree lui-meme, sans faire confiance au frontend. */
+export function assertValidCreditDuration(
+  price: number,
+  months: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): void {
+  const maxAllowed = computeMaxCreditDurationMonths(price, params);
+  if (!Number.isInteger(months) || months <= 0 || months > maxAllowed) {
+    throw new Error(`Duree invalide : ${months} mois demandes, maximum autorise ${maxAllowed} mois pour ${price} FCFA`);
+  }
+}
+
+export interface CreditTerms {
+  bankFeeAmount: number;
+  totalAmountToWire: number;
+  monthlyInstallment: number;
+}
+
+/** Montant a virer par la banque = prix + frais ; mensualite arrondie au FCFA superieur. */
+export function computeCreditTerms(
+  price: number,
+  months: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): CreditTerms {
+  assertValidCreditDuration(price, months, params);
+  const bankFeeAmount = round(price * params.creditBankFeeRate);
+  const totalAmountToWire = price + bankFeeAmount;
+  return { bankFeeAmount, totalAmountToWire, monthlyInstallment: Math.ceil(totalAmountToWire / months) };
+}
+
+/** Reglement commercant pour un credit : commission (4 %) sur le prix de l'article. */
+export function computeCreditSettlement(
+  price: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): MerchantSettlementAmounts {
+  const commissionAmount = round(price * params.creditMerchantCommissionRate);
+  return { commissionRate: params.creditMerchantCommissionRate, commissionAmount, netAmount: price - commissionAmount };
 }
 
 // ------------------------------------------------------------------
-// UTILITAIRES
+// COFFRE (prelevement automatique sur salaire)
 // ------------------------------------------------------------------
 
-/** Arrondi a 2 decimales pour eviter les erreurs de virgule flottante sur les montants FCFA. */
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
+export interface VaultTerms {
+  monthlyAmount: number;
+  maxDurationMonths: number;
+}
+
+export function computeVaultTerms(
+  price: number,
+  months: number,
+  params: FinancialParams = DEFAULT_FINANCIAL_PARAMS
+): VaultTerms {
+  assertValidCreditDuration(price, months, params);
+  return { monthlyAmount: Math.ceil(price / months), maxDurationMonths: computeMaxCreditDurationMonths(price, params) };
 }

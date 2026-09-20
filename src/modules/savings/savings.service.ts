@@ -1,193 +1,293 @@
-import { Order, SavingsPlan, MobileMoneyOperator, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma, INTERACTIVE_TRANSACTION_OPTIONS } from "@config/prisma";
 import { AppError } from "@common/errors/AppError";
-import { daysBetween } from "@common/utils/date";
-import { computeSavingsPenalty } from "@services/financial/financialService";
-import { generateQrToken } from "@services/qr/qrService";
+import { addMonths, daysBetween } from "@common/utils/date";
+import { PageParams, toSkipTake } from "@common/utils/response";
 import { recordAudit } from "@services/audit/auditService";
-import { notifyUser } from "@services/notification/notificationService";
-import { logger } from "@config/logger";
+import { notifyAdmins, notifyUser } from "@services/notification/notificationService";
+import { canExtendSavings, computeSavingsPenalty, getSavingsTerms } from "@services/financial/financialService";
+import { getFinancialParams } from "@services/financial/settingsService";
+import { cancelOrderAndRestock, getOwnOrderOrThrow } from "@modules/orders/order.service";
+import { markOrderFinancedAndReady } from "@modules/orders/orderWorkflow";
 
-export async function listClientSavings(clientId: string) {
-  const orders = await prisma.order.findMany({
-    where: { clientId, paymentMode: "EPARGNE" },
-    include: { savingsPlan: true, product: { select: { title: true } } },
-    orderBy: { createdAt: "desc" },
-  });
+/** Vue API d'une epargne : progression et echeance calculees cote serveur. */
+function present<T extends { targetAmount: number; savedAmount: number; dueDate: Date | null }>(savings: T) {
+  return {
+    ...savings,
+    remainingAmount: Math.max(0, savings.targetAmount - savings.savedAmount),
+    progressPercent:
+      savings.targetAmount > 0 ? Math.min(100, Math.floor((savings.savedAmount / savings.targetAmount) * 100)) : 0,
+    daysRemaining: savings.dueDate ? daysBetween(new Date(), savings.dueDate) : null,
+  };
+}
 
-  const results = [];
-  for (const order of orders) {
-    if (order.savingsPlan) {
-      await checkAndApplyOverduePenalty(order.savingsPlan, order);
-    }
-    results.push(order);
+async function getOwnSavingsOrThrow(clientId: string, savingsId: string) {
+  const savings = await prisma.savings.findUnique({ where: { id: savingsId }, include: { order: true } });
+  if (!savings || savings.order.clientId !== clientId) {
+    throw AppError.notFound("Epargne introuvable");
   }
-
-  // Relit apres les eventuelles penalites appliquees pour renvoyer un etat a jour.
-  const refreshed = await prisma.order.findMany({
-    where: { clientId, paymentMode: "EPARGNE" },
-    include: { savingsPlan: true, product: { select: { title: true } } },
-    orderBy: { createdAt: "desc" },
-  });
-
-  return refreshed.map((order) => {
-    const plan = order.savingsPlan;
-    const targetAmount = plan ? Number(plan.targetAmount) : 0;
-    const currentSavedAmount = plan ? Number(plan.currentSavedAmount) : 0;
-
-    return {
-      orderId: order.id,
-      productTitle: order.product.title,
-      status: order.status,
-      targetAmount,
-      currentSavedAmount,
-      progressPercent: targetAmount > 0 ? Math.min(100, Math.round((currentSavedAmount / targetAmount) * 100)) : 0,
-      remainingAmount: Math.max(0, targetAmount - currentSavedAmount),
-      dueDate: plan?.dueDate ?? null,
-      daysRemaining: plan ? daysBetween(new Date(), plan.dueDate) : null,
-      isCompleted: plan?.isCompleted ?? false,
-      penaltyApplied: plan?.penaltyApplied ?? false,
-    };
-  });
+  return savings;
 }
 
 /**
- * A appeler de maniere opportuniste (lecture de commande/epargne, reception d'un depot)
- * tant qu'aucun job planifie ne parcourt les echeances en tache de fond. Applique la
- * regle actuelle : penalite de 15%, remboursement de 85%, blocage temporaire du compte.
+ * POST /orders/:id/savings : ouvre le plan d'epargne. La date de depart n'est PAS fixee
+ * ici mais au premier versement effectivement recu et valide (cahier, section 6).
  */
-export async function checkAndApplyOverduePenalty(savingsPlan: SavingsPlan, order: Order): Promise<void> {
-  if (savingsPlan.isCompleted || savingsPlan.penaltyApplied) {
-    return;
+export async function createSavings(clientId: string, orderId: string, requestedMonths?: number) {
+  const order = await getOwnOrderOrThrow(clientId, orderId);
+
+  if (order.cancelledAt) {
+    throw AppError.conflict("Cette commande est annulee");
+  }
+  if (order.financingMode !== "SAVINGS" || order.status !== "FINANCEMENT_EN_COURS") {
+    throw AppError.conflict("Choisissez d'abord le financement par Epargne (POST /orders/:id/select-financing)");
+  }
+  if (order.savings) {
+    throw AppError.conflict("Un plan d'epargne existe deja pour cette commande");
   }
 
-  if (new Date() <= savingsPlan.dueDate) {
-    return;
+  const params = await getFinancialParams();
+  const terms = getSavingsTerms(order.amount, params);
+  const durationMonths = requestedMonths ?? terms.maxDurationMonths;
+
+  if (durationMonths > terms.maxDurationMonths) {
+    throw AppError.badRequest(`Duree maximale : ${terms.maxDurationMonths} mois pour ce montant`);
   }
 
-  const { penaltyAmount, refundAmount } = computeSavingsPenalty(Number(savingsPlan.currentSavedAmount));
-  const client = await prisma.client.findUnique({ where: { id: order.clientId } });
-
-  await prisma.$transaction([
-    prisma.savingsPlan.update({ where: { id: savingsPlan.id }, data: { penaltyApplied: true } }),
-    prisma.order.update({ where: { id: order.id }, data: { status: "ECHEC_PENALISE" } }),
-    ...(client ? [prisma.user.update({ where: { id: client.userId }, data: { isActive: false } })] : []),
-  ]);
-
-  // Le remboursement de 85% doit partir vers le numero Mobile Money utilise par le
-  // client pour ses versements ; ce numero n'est pas encore capture par savings_deposits
-  // et l'integration Orange/Coris Money reste a brancher (cf. services/payment).
-  // Le virement est donc a executer manuellement par l'Admin tant que ces deux pieces
-  // ne sont pas en place : les montants exacts sont journalises ci-dessous pour cela.
-  logger.warn("Penalite Epargne appliquee : remboursement a executer manuellement", {
-    orderId: order.id,
-    savingsPlanId: savingsPlan.id,
-    penaltyAmount,
-    refundAmount,
+  const savings = await prisma.savings.create({
+    data: {
+      orderId,
+      targetAmount: order.amount,
+      minInstallment: terms.minInstallment,
+      durationMonths,
+    },
   });
 
   await recordAudit({
-    action: "SAVINGS_PENALTY_APPLIED",
-    entityType: "order",
-    entityId: order.id,
-    metadata: { savingsPlanId: savingsPlan.id, penaltyAmount, refundAmount },
+    actorRole: "CLIENT",
+    action: "SAVINGS_CREATED",
+    entityType: "savings",
+    entityId: savings.id,
+    amount: savings.targetAmount,
+    status: savings.status,
+    metadata: { orderId, durationMonths },
   });
 
-  if (client) {
-    await notifyUser(
-      client.userId,
-      "Penalite appliquee sur votre Epargne",
-      `Le delai de votre Epargne est depasse. Penalite de ${penaltyAmount} FCFA appliquee, remboursement de ${refundAmount} FCFA en cours. Votre compte est temporairement bloque.`
+  return {
+    ...present(savings),
+    // Reference a fournir lors du versement Mobile Money : le webhook rattache le paiement a la commande.
+    paymentReference: order.id,
+  };
+}
+
+export async function getSavings(clientId: string, savingsId: string) {
+  await getOwnSavingsOrThrow(clientId, savingsId);
+  await evaluateSavingsDeadline(savingsId);
+  return present(await prisma.savings.findUniqueOrThrow({ where: { id: savingsId } }));
+}
+
+export async function getSavingsHistory(clientId: string, savingsId: string, page: PageParams) {
+  await getOwnSavingsOrThrow(clientId, savingsId);
+  const where = { savingsId };
+  const [items, total] = await Promise.all([
+    prisma.payment.findMany({
+      where,
+      select: { id: true, kind: true, amount: true, currency: true, status: true, provider: true, providerTransactionId: true, createdAt: true, confirmedAt: true },
+      orderBy: { createdAt: "desc" },
+      ...toSkipTake(page),
+    }),
+    prisma.payment.count({ where }),
+  ]);
+  return { items, total };
+}
+
+/** POST /savings/:id/extension : prolongation (2 mois maximum au total), avant l'echeance. */
+export async function extendSavings(clientId: string, savingsId: string, months: number) {
+  const savings = await getOwnSavingsOrThrow(clientId, savingsId);
+  await evaluateSavingsDeadline(savingsId);
+  const current = await prisma.savings.findUniqueOrThrow({ where: { id: savingsId } });
+
+  if (current.status !== "EN_COURS" && current.status !== "PROLONGATION") {
+    throw AppError.conflict(`Prolongation impossible (statut : ${current.status})`);
+  }
+  if (!current.dueDate) {
+    throw AppError.conflict("L'epargne demarre au premier versement : aucune echeance a prolonger pour l'instant");
+  }
+
+  const params = await getFinancialParams();
+  if (!canExtendSavings(current.extensionMonths, months, params)) {
+    throw AppError.badRequest(
+      `Prolongation refusee : maximum ${params.savingsExtensionMaxMonths} mois au total (deja ${current.extensionMonths})`
     );
   }
-}
 
-interface ProcessDepositInput {
-  orderId: string;
-  transactionReference: string;
-  amount: number;
-  operator: MobileMoneyOperator;
-}
-
-export async function processSavingsDeposit(input: ProcessDepositInput) {
-  const order = await prisma.order.findUnique({
-    where: { id: input.orderId },
-    include: { savingsPlan: true, client: { select: { userId: true } } },
+  const updated = await prisma.savings.update({
+    where: { id: savingsId },
+    data: {
+      extensionMonths: { increment: months },
+      dueDate: addMonths(current.dueDate, months),
+      status: "PROLONGATION",
+    },
   });
-
-  if (!order || order.paymentMode !== "EPARGNE" || !order.savingsPlan) {
-    throw AppError.badRequest("Reference de commande Epargne invalide");
-  }
-
-  const savingsPlan = order.savingsPlan;
-
-  // Idempotence : la contrainte UNIQUE sur transaction_reference est la source de verite ;
-  // si le depot existe deja, on renvoie l'etat courant sans reappliquer les effets metier
-  // (cf. cahier, section 14 et "Tests webhook avec evenement duplique").
-  const existingDeposit = await prisma.savingsDeposit.findUnique({
-    where: { transactionReference: input.transactionReference },
-  });
-  if (existingDeposit) {
-    return { alreadyProcessed: true, orderId: order.id };
-  }
-
-  if (savingsPlan.isCompleted || order.status !== "EN_COURS") {
-    throw AppError.conflict("Cette Epargne n'accepte plus de nouveaux depots");
-  }
-
-  const newSavedAmount = Number(savingsPlan.currentSavedAmount) + input.amount;
-  const targetAmount = Number(savingsPlan.targetAmount);
-  const isNowCompleted = newSavedAmount >= targetAmount;
-
-  try {
-    await prisma.$transaction(async (tx) => {
-      await tx.savingsDeposit.create({
-        data: {
-          savingsPlanId: savingsPlan.id,
-          amount: input.amount,
-          transactionReference: input.transactionReference,
-          operator: input.operator,
-          status: "SUCCESS",
-        },
-      });
-
-      await tx.savingsPlan.update({
-        where: { id: savingsPlan.id },
-        data: { currentSavedAmount: newSavedAmount, isCompleted: isNowCompleted },
-      });
-
-      if (isNowCompleted) {
-        await tx.order.update({
-          where: { id: order.id },
-          data: { status: "PRET_A_LIVRER", qrCodeToken: generateQrToken() },
-        });
-      }
-    }, INTERACTIVE_TRANSACTION_OPTIONS);
-  } catch (error) {
-    // Deux webhooks strictement simultanes pour le meme evenement peuvent tous les deux
-    // passer le controle "existingDeposit" ci-dessus avant que l'un des deux n'insere :
-    // la contrainte UNIQUE sur transaction_reference tranche alors au niveau DB (P2002).
-    // C'est le meme cas que le rejeu detecte plus haut, traite de la meme facon.
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return { alreadyProcessed: true, orderId: order.id };
-    }
-    throw error;
-  }
 
   await recordAudit({
-    action: isNowCompleted ? "SAVINGS_PLAN_COMPLETED" : "SAVINGS_DEPOSIT_RECEIVED",
-    entityType: "order",
-    entityId: order.id,
-    metadata: { amount: input.amount, transactionReference: input.transactionReference, newSavedAmount },
+    userId: undefined,
+    actorRole: "CLIENT",
+    action: "SAVINGS_EXTENDED",
+    entityType: "savings",
+    entityId: savingsId,
+    amount: current.savedAmount,
+    status: "PROLONGATION",
+    metadata: { months, orderId: savings.orderId },
   });
 
-  await notifyUser(
-    order.client.userId,
-    isNowCompleted ? "Epargne terminee" : "Depot recu",
-    isNowCompleted
-      ? "Votre Epargne est terminee, votre code QR est disponible pour le retrait en boutique."
-      : `Depot de ${input.amount} FCFA recu, ${newSavedAmount} FCFA epargnes sur ${targetAmount} FCFA.`
-  );
+  return present(updated);
+}
 
-  return { alreadyProcessed: false, orderId: order.id, isCompleted: isNowCompleted };
+/**
+ * Applique un versement valide (appele par le traitement des webhooks, dans SA transaction).
+ * Premier versement : fixe la date de depart. 100 % atteint : ATTEINTE -> commande prete + QR.
+ */
+export async function applySavingsDeposit(
+  tx: Prisma.TransactionClient,
+  savingsId: string,
+  amount: number,
+  paymentAt: Date
+) {
+  const params = await getFinancialParams();
+  const savings = await tx.savings.findUniqueOrThrow({ where: { id: savingsId }, include: { order: true } });
+
+  const isFirstDeposit = savings.startedAt === null;
+  const startedAt = savings.startedAt ?? paymentAt;
+  const dueDate = isFirstDeposit
+    ? addMonths(startedAt, savings.durationMonths + savings.extensionMonths)
+    : savings.dueDate;
+
+  const savedAmount = savings.savedAmount + amount;
+  const reached = savedAmount >= savings.targetAmount;
+
+  const updated = await tx.savings.update({
+    where: { id: savingsId },
+    data: { savedAmount, startedAt, dueDate, status: reached ? "ATTEINTE" : savings.status },
+  });
+
+  if (reached) {
+    await markOrderFinancedAndReady(tx, savings.orderId, params.qrTtlHours);
+  }
+
+  return { savings: updated, reached, isFirstDeposit };
+}
+
+/**
+ * Echec definitif : duree initiale + prolongation depassees sans atteindre l'objectif.
+ * Penalite (15 %), remboursement du reste (85 %) a executer, commande annulee et stock
+ * restitue. Idempotent : le passage a ECHOUEE est conditionnel au statut courant.
+ * Retourne true si un changement a ete effectue.
+ */
+export async function evaluateSavingsDeadline(savingsId: string): Promise<boolean> {
+  const savings = await prisma.savings.findUnique({ where: { id: savingsId }, include: { order: { include: { client: true } } } });
+
+  if (!savings || !savings.dueDate) return false;
+  if (savings.status !== "EN_COURS" && savings.status !== "PROLONGATION") return false;
+  if (new Date() <= savings.dueDate) return false;
+
+  const params = await getFinancialParams();
+  const { penaltyAmount, refundAmount } = computeSavingsPenalty(savings.savedAmount, params);
+
+  const changed = await prisma.$transaction(async (tx) => {
+    const flipped = await tx.savings.updateMany({
+      where: { id: savingsId, status: { in: ["EN_COURS", "PROLONGATION"] } },
+      data: { status: "ECHOUEE", penaltyAmount, refundAmount },
+    });
+    if (flipped.count === 0) return false;
+
+    await cancelOrderAndRestock(tx, savings.orderId, "Echec de l'epargne : echeance depassee");
+    await recordAudit(
+      {
+        actorRole: "SYSTEM",
+        action: "SAVINGS_FAILED",
+        entityType: "savings",
+        entityId: savingsId,
+        amount: savings.savedAmount,
+        status: "ECHOUEE",
+        metadata: { penaltyAmount, refundAmount, orderId: savings.orderId },
+      },
+      tx
+    );
+    return true;
+  }, INTERACTIVE_TRANSACTION_OPTIONS);
+
+  if (changed) {
+    await notifyUser(
+      savings.order.client.userId,
+      "Epargne echouee",
+      `Le delai de votre epargne est depasse. Penalite de ${penaltyAmount} FCFA, remboursement de ${refundAmount} FCFA en cours.`,
+      { savingsId, orderId: savings.orderId }
+    );
+    await notifyAdmins("Remboursement d'epargne a executer", `Rembourser ${refundAmount} FCFA (commande ${savings.order.orderNumber}).`, {
+      savingsId,
+      refundAmount,
+    });
+  }
+  return changed;
+}
+
+/** Job periodique : traite toutes les epargnes dont l'echeance est depassee. */
+export async function sweepOverdueSavings(): Promise<number> {
+  const overdue = await prisma.savings.findMany({
+    where: { status: { in: ["EN_COURS", "PROLONGATION"] }, dueDate: { lt: new Date() } },
+    select: { id: true },
+    take: 500,
+  });
+
+  let processed = 0;
+  for (const { id } of overdue) {
+    if (await evaluateSavingsDeadline(id)) processed += 1;
+  }
+  return processed;
+}
+
+/** Admin : le remboursement (85 %) a ete verse au client -> REMBOURSEE, avec trace de paiement. */
+export async function markSavingsRefunded(savingsId: string, adminUserId: string, reference?: string) {
+  const savings = await prisma.savings.findUnique({ where: { id: savingsId }, include: { order: { include: { client: true } } } });
+  if (!savings) {
+    throw AppError.notFound("Epargne introuvable");
+  }
+  if (savings.status !== "ECHOUEE") {
+    throw AppError.conflict(`Remboursement impossible (statut : ${savings.status})`);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const flipped = await tx.savings.updateMany({ where: { id: savingsId, status: "ECHOUEE" }, data: { status: "REMBOURSEE" } });
+    if (flipped.count === 0) {
+      throw AppError.conflict("Remboursement deja traite");
+    }
+    await tx.payment.create({
+      data: {
+        orderId: savings.orderId,
+        savingsId,
+        kind: "SAVINGS_REFUND",
+        amount: savings.refundAmount,
+        status: "CONFIRME",
+        confirmedAt: new Date(),
+        providerTransactionId: reference,
+      },
+    });
+    await recordAudit(
+      {
+        userId: adminUserId,
+        actorRole: "ADMIN",
+        action: "SAVINGS_REFUNDED",
+        entityType: "savings",
+        entityId: savingsId,
+        amount: savings.refundAmount,
+        status: "REMBOURSEE",
+        metadata: { reference },
+      },
+      tx
+    );
+  });
+
+  await notifyUser(savings.order.client.userId, "Epargne remboursee", `${savings.refundAmount} FCFA vous ont ete rembourses.`, { savingsId });
+  return { id: savingsId, status: "REMBOURSEE" as const, refundAmount: savings.refundAmount };
 }

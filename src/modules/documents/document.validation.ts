@@ -5,3 +5,7 @@ import { z } from "zod";
 export const documentFilenameParamSchema = z.object({
   filename: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png|webp|pdf)$/i),
 });
+
+export const temporaryTokenParamSchema = z.object({
+  token: z.string().min(20).max(1000),
+});

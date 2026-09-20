@@ -1,7 +1,7 @@
 {
-  "name": "nanapay-backend",
+  "name": "nanopay-backend",
   "version": "0.1.0",
-  "description": "NanaPay - API Backend (paiement en tranches : Epargne / Credit Bancaire)",
+  "description": "NanoPay - API Backend (commande centrale, Epargne / Coffre / Credit, QR, webhooks)",
   "main": "dist/server.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/server.ts",
@@ -13,9 +13,12 @@
     "prisma:studio": "prisma studio",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
-    "test:integration": "jest --config jest.integration.config.js --runInBand",
+    "test:integration": "jest --config jest.integration.config.js --runInBand --passWithNoTests",
     "lint": "eslint \"src/**/*.ts\"",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts",
+    "seed:demo": "ts-node -r tsconfig-paths/register prisma/seed.ts --demo",
+    "docs:postman": "node scripts/generate-postman.js"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",
@@ -57,5 +60,8 @@
     "tsc-alias": "^1.9.5",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.6.2"
+  },
+  "prisma": {
+    "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts"
   }
 }

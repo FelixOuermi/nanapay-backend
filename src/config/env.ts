@@ -8,6 +8,9 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
   APP_URL: z.string().default("http://localhost:4000"),
 
+  // Origines autorisees par CORS (domaine du frontend), separees par des virgules. "*" = tout (dev).
+  CORS_ORIGIN: z.string().default("*"),
+
   DATABASE_URL: z.string().min(1, "DATABASE_URL est requis"),
 
   JWT_ACCESS_SECRET: z.string().min(1, "JWT_ACCESS_SECRET est requis"),
@@ -26,13 +29,11 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   SMTP_FROM: z.string().optional(),
 
-  ORANGE_MONEY_BASE_URL: z.string().optional(),
-  ORANGE_MONEY_API_KEY: z.string().optional(),
-  ORANGE_MONEY_WEBHOOK_SECRET: z.string().optional(),
-
-  CORIS_MONEY_BASE_URL: z.string().optional(),
-  CORIS_MONEY_API_KEY: z.string().optional(),
-  CORIS_MONEY_WEBHOOK_SECRET: z.string().optional(),
+  // Secret HMAC-SHA256 partage avec l'infrastructure Mobile Money interoperable : signe le corps
+  // brut de POST /webhooks/payment (en-tete X-Signature). Obligatoire en production.
+  PAYMENT_WEBHOOK_SECRET: z.string().optional(),
+  MOBILE_MONEY_BASE_URL: z.string().optional(),
+  MOBILE_MONEY_API_KEY: z.string().optional(),
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
   RATE_LIMIT_MAX_AUTH: z.coerce.number().default(10),

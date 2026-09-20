@@ -1,52 +1,63 @@
 openapi: 3.0.3
 info:
-  title: NanaPay API
-  version: "1.0.0"
+  title: NanoPay API
+  version: "2.0.0"
   description: |
-    API Backend NanaPay (paiement en tranches : Épargne / Crédit Bancaire).
+    API Backend NanoPay — commande centrale unique reliant Client, Commerçant, Banque et Admin,
+    avec trois modes de financement : **Épargne**, **Coffre** (prélèvement sur salaire) et **Crédit**.
 
-    Toutes les routes sont préfixées par `/api/v1` (non répété ci-dessous, voir `servers`).
-    L'authentification se fait par JWT (`Authorization: Bearer <accessToken>`), obtenu
-    via `POST /auth/login`. Chaque endpoint précise dans sa description le(s) rôle(s)
-    requis (ADMIN, CLIENT, COMMERCANT, BANQUE) — le Backend applique un contrôle RBAC
-    strict en plus de vérifier la propriété de la ressource (ex: un client ne peut lire
-    que ses propres commandes).
+    Conforme au « Cahier de construction BACKEND ».
 
-    Toutes les erreurs suivent le format `{ "error": { "code", "message", "details?" } }`.
+    ## Contrat de connexion
+    | Élément | Contrat |
+    |---|---|
+    | Base URL | `/api` (alias historique `/api/v1`) |
+    | Format | JSON UTF-8 (multipart pour les documents) |
+    | Auth | `Authorization: Bearer <accessToken>` + refresh token (`/auth/refresh`, rotation) |
+    | Succès | `{ "data": ..., "meta"?: ... }` |
+    | Erreur | `{ "code", "message", "details"?, "requestId" }` (`X-Request-Id` aussi en en-tête) |
+    | Pagination | query `page`, `limit` ; `meta` = `{ page, limit, total, nextPage }` |
+    | Dates | ISO 8601 |
+    | Montants | FCFA **entiers**, jamais de flottant |
+    | Identifiants | UUID serveur ; `orderNumber` lisible (ex. `NP-2026-00001245`) pour l'UI |
+    | Temps réel | pas de WebSocket : polling contrôlé de `GET /notifications` et des ressources |
+
+    Les règles financières et de sécurité sont **toujours** appliquées côté backend ; le frontend
+    ne fait que consommer ces contrats.
+
+    ## Circuit
+    Client → produit → commande (`CREEE`) → `select-financing` (`FINANCEMENT_EN_COURS`) →
+    Épargne / Coffre / Crédit → `FINANCEE` → `PRETE_A_LIVRER` (+ QR) → scan commerçant →
+    retrait confirmé (`LIVREE`, règlement commerçant déclenché) → règlement payé (`TERMINEE`).
 servers:
-  - url: http://localhost:4000/api/v1
+  - url: http://localhost:4000/api
     description: Développement local
 tags:
-  - name: Auth
-    description: Inscription, connexion, session
-  - name: Client
-    description: Profil, épargne et notifications du Client
-  - name: Market
-    description: Recherche de boutiques et d'articles (Client)
-  - name: Orders
-    description: Commandes, Épargne, dossier Crédit Bancaire (Client)
-  - name: Merchant
-    description: Boutique, produits, ventes, retraits (Commerçant)
-  - name: Bank
-    description: Dossiers de crédit et virements (Banque)
-  - name: Admin
-    description: Validation des comptes, suivi, virements (Admin)
-  - name: Webhooks
-    description: Notifications entrantes des opérateurs Mobile Money
-  - name: Documents
-    description: Consultation contrôlée des pièces justificatives privées
+  - { name: Auth, description: Inscription, connexion, profil }
+  - { name: Marketplace, description: Villes, communes, boutiques, produits (public) }
+  - { name: Orders, description: Commandes et choix du financement (CLIENT) }
+  - { name: Savings, description: Épargne progressive (CLIENT) }
+  - { name: Vault, description: Coffre — prélèvement automatique sur salaire (CLIENT) }
+  - { name: Credit, description: Profil bancaire, demandes et crédits (CLIENT) }
+  - { name: Merchant, description: Boutique, produits, commandes, QR, retrait (MERCHANT) }
+  - { name: Bank, description: Profils, demandes de crédit, avis de virement (BANK) }
+  - { name: Admin, description: Supervision, paramètres, règlements (ADMIN) }
+  - { name: Webhooks, description: Événements Mobile Money signés }
+  - { name: Notifications, description: Notifications de l'acteur connecté }
+  - { name: Documents, description: Documents privés (CNIB, bulletins) à accès contrôlé }
 security:
   - bearerAuth: []
 paths:
   # ------------------------------------------------------------------ AUTH
-  /auth/register/client:
+  /auth/register:
     post:
       tags: [Auth]
-      summary: Inscription Client
+      summary: Inscription Client ou Commerçant
       description: |
-        Public. Crée un compte Client **inactif**, en attente de validation par l'Admin
-        (voir `POST /admin/clients/:id/approve`). Requête `multipart/form-data` (photos
-        CNIB obligatoires).
+        Public. `multipart/form-data` avec les photos `cnibRecto` et `cnibVerso` (stockées de façon privée).
+        `role=CLIENT` : compte `ACTIF` immédiatement. `role=MERCHANT` : `EN_ATTENTE` jusqu'à validation Admin.
+        Les rôles BANK et ADMIN ne s'inscrivent pas (provisionnés hors API, voir `npm run seed:demo`).
+        Les chemins `/auth/register/client` et `/auth/register/merchant` sont des alias.
       security: []
       requestBody:
         required: true
@@ -54,72 +65,30 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [email, password, firstName, lastName, phoneNumber, city, township, sector, cnibRecto, cnibVerso]
+              required: [role, email, password, firstName, lastName, cnibRecto, cnibVerso]
               properties:
-                email: { type: string, format: email, example: "awa.client@test.com" }
-                password: { type: string, format: password, minLength: 8, example: "Password123!" }
-                firstName: { type: string, example: "Awa" }
-                lastName: { type: string, example: "Traore" }
-                phoneNumber: { type: string, example: "70000001" }
-                city: { type: string, example: "Ouagadougou" }
-                township: { type: string, example: "Baskuy" }
-                sector: { type: string, example: "Secteur 10" }
+                role: { type: string, enum: [CLIENT, MERCHANT] }
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 8 }
+                firstName: { type: string }
+                lastName: { type: string }
+                phoneNumber: { type: string, description: "CLIENT" }
+                cityId: { type: string, description: "CLIENT" }
+                communeId: { type: string, description: "CLIENT" }
+                ifuRccmNumber: { type: string, description: "MERCHANT" }
+                orangeMoneyNumber: { type: string, description: "MERCHANT" }
+                corisMoneyNumber: { type: string, description: "MERCHANT" }
+                defaultPayoutChannel: { type: string, enum: [ORANGE_MONEY, CORIS_MONEY], description: "MERCHANT" }
                 cnibRecto: { type: string, format: binary }
                 cnibVerso: { type: string, format: binary }
       responses:
-        "201":
-          description: Compte créé, en attente de validation
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RegistrationResult" }
-        "409": { $ref: "#/components/responses/ConflictError" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-
-  /auth/register/merchant:
-    post:
-      tags: [Auth]
-      summary: Inscription Commerçant
-      description: |
-        Public. Crée un compte Commerçant **inactif**, en attente de validation par
-        l'Admin. Sans `corisMoneyNumber`, le compte ne pourra jamais recevoir de
-        paiements Crédit Bancaire (seule l'Épargne restera disponible).
-      security: []
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [email, password, firstName, lastName, ifuRccmNumber, city, defaultPayoutAccount, cnibRecto, cnibVerso]
-              properties:
-                email: { type: string, format: email, example: "issa.commercant@test.com" }
-                password: { type: string, format: password, example: "Password123!" }
-                firstName: { type: string, example: "Issa" }
-                lastName: { type: string, example: "Kone" }
-                ifuRccmNumber: { type: string, example: "IFU12345" }
-                city: { type: string, example: "Ouagadougou" }
-                orangeMoneyNumber: { type: string, example: "70000002" }
-                corisMoneyNumber: { type: string, example: "70000003" }
-                defaultPayoutAccount: { type: string, enum: [ORANGE_MONEY, CORIS_MONEY] }
-                cnibRecto: { type: string, format: binary }
-                cnibVerso: { type: string, format: binary }
-      responses:
-        "201":
-          description: Compte créé, en attente de validation
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RegistrationResult" }
-        "409": { $ref: "#/components/responses/ConflictError" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-
+        "201": { description: Compte créé, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /auth/login:
     post:
       tags: [Auth]
       summary: Connexion
-      description: |
-        Public. Refuse un compte non actif (403 : en attente de validation, ou bloqué
-        après pénalité). Renvoie un access token JWT (15 min) et un refresh token opaque
-        (30 jours, à usage unique — voir `/auth/refresh`).
       security: []
       requestBody:
         required: true
@@ -130,406 +99,350 @@ paths:
               required: [email, password]
               properties:
                 email: { type: string, format: email }
-                password: { type: string, format: password }
-            example: { email: "awa.client@test.com", password: "Password123!" }
+                password: { type: string }
       responses:
-        "200":
-          description: Connexion réussie
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AuthTokens" }
-        "401":
-          description: Identifiants invalides
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "403":
-          description: Compte en attente de validation ou temporairement bloqué
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
+        "200": { description: "`data` = { accessToken, refreshToken, user }", content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /auth/refresh:
     post:
       tags: [Auth]
-      summary: Rafraîchir la session
-      description: Public. Rotation du refresh token — l'ancien est immédiatement révoqué.
+      summary: Renouvelle les jetons (rotation du refresh token)
       security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [refreshToken]
-              properties: { refreshToken: { type: string } }
+      requestBody: { $ref: "#/components/requestBodies/RefreshToken" }
       responses:
-        "200":
-          description: Nouveaux tokens
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AuthTokens" }
-        "401":
-          description: Refresh token invalide, expiré ou déjà utilisé
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
+        "200": { description: "`data` = { accessToken, refreshToken }" }
+        "401": { $ref: "#/components/responses/Error" }
   /auth/logout:
     post:
       tags: [Auth]
-      summary: Déconnexion
-      description: Public (n'exige pas l'access token). Révoque le refresh token fourni, de façon idempotente.
+      summary: Révoque le refresh token (idempotent)
       security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [refreshToken]
-              properties: { refreshToken: { type: string } }
+      requestBody: { $ref: "#/components/requestBodies/RefreshToken" }
       responses:
         "204": { description: Déconnecté }
-
   /auth/recovery:
     post:
       tags: [Auth]
-      summary: Récupération de compte
-      description: |
-        Public. Génère un nouveau mot de passe temporaire et l'envoie par e-mail. Ne
-        révèle jamais si l'adresse existe : la réponse est identique dans tous les cas.
+      summary: Récupération de compte (mot de passe temporaire par e-mail)
       security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [email], properties: { email: { type: string, format: email } } } } }
+      responses:
+        "200": { description: Réponse identique que le compte existe ou non }
+  /me:
+    get:
+      tags: [Auth]
+      summary: Profil de l'utilisateur connecté (tous rôles)
+      responses:
+        "200": { description: "`data` = compte + profil client/commerçant/banque (sans les CNIB)" }
+    patch:
+      tags: [Auth]
+      summary: Met à jour son profil / change son mot de passe
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [email]
-              properties: { email: { type: string, format: email } }
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                phoneNumber: { type: string }
+                cityId: { type: string }
+                communeId: { type: string }
+                orangeMoneyNumber: { type: string }
+                corisMoneyNumber: { type: string }
+                defaultPayoutChannel: { type: string, enum: [ORANGE_MONEY, CORIS_MONEY] }
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8 }
       responses:
-        "200":
-          description: Toujours 200, que le compte existe ou non
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { message: { type: string } }
-
-  # ------------------------------------------------------------------ CLIENT
-  /client/profile:
+        "200": { description: Profil mis à jour }
+  # ------------------------------------------------------------------ MARKETPLACE
+  /marketplace/cities:
     get:
-      tags: [Client]
-      summary: Profil du Client connecté
-      description: Rôle requis. **CLIENT**.
+      tags: [Marketplace]
+      summary: Liste des villes
+      security: []
       responses:
-        "200":
-          description: Profil
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ClientProfile" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
-
-  /client/savings:
+        "200": { description: "`data` = [{ id, name }]" }
+  /marketplace/communes:
     get:
-      tags: [Client]
-      summary: Baromètre d'épargne du Client connecté
-      description: |
-        Rôle requis : **CLIENT**. Liste toutes les commandes en mode Épargne du client
-        avec progression, montant restant, jours restants avant échéance. Applique au
-        passage la pénalité de retard si une échéance vient d'être dépassée.
-      responses:
-        "200":
-          description: Liste des épargnes
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: "#/components/schemas/SavingsSummary" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-
-  /client/notifications:
-    get:
-      tags: [Client]
-      summary: Notifications du Client connecté
-      description: Rôle requis. **CLIENT**.
-      responses:
-        "200":
-          description: Notifications, les plus récentes en premier
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: "#/components/schemas/Notification" }
-
-  # ------------------------------------------------------------------ MARKET
-  /market/shops:
-    get:
-      tags: [Market]
-      summary: Rechercher des boutiques
-      description: Rôle requis. **CLIENT**.
+      tags: [Marketplace]
+      summary: Communes d'une ville
+      security: []
       parameters:
-        - name: city
-          in: query
-          schema: { type: string }
-          example: Ouagadougou
-        - name: township
-          in: query
-          schema: { type: string }
-        - name: search
-          in: query
-          description: Recherche partielle insensible à la casse sur le nom de la boutique
-          schema: { type: string }
+        - { name: cityId, in: query, required: true, schema: { type: string } }
       responses:
-        "200":
-          description: Boutiques correspondantes
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data: { type: array, items: { $ref: "#/components/schemas/Shop" } }
-
-  /shops/{id}/products:
+        "200": { description: "`data` = [{ id, cityId, name }]" }
+  /stores:
     get:
-      tags: [Market]
-      summary: Articles visibles d'une boutique
-      description: Rôle requis **CLIENT**. Ne renvoie que les articles `isVisible=true` (stock disponible).
+      tags: [Marketplace]
+      summary: Boutiques (commerçants validés uniquement)
+      security: []
       parameters:
-        - $ref: "#/components/parameters/IdPathParam"
+        - { name: cityId, in: query, schema: { type: string } }
+        - { name: communeId, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
       responses:
-        "200":
-          description: Boutique + articles
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  shop: { $ref: "#/components/schemas/Shop" }
-                  products: { type: array, items: { $ref: "#/components/schemas/Product" } }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-
+        "200": { description: Page de boutiques }
+  /stores/{storeId}:
+    get:
+      tags: [Marketplace]
+      summary: Détail d'une boutique et de ses produits publiés en stock
+      security: []
+      parameters:
+        - { name: storeId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Boutique }
+        "404": { $ref: "#/components/responses/Error" }
+  /products/{productId}:
+    get:
+      tags: [Marketplace]
+      summary: Détail d'un produit (prix FCFA entier, définitif une fois publié)
+      security: []
+      parameters:
+        - { name: productId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Produit }
+        "404": { $ref: "#/components/responses/Error" }
   # ------------------------------------------------------------------ ORDERS
   /orders:
     post:
       tags: [Orders]
-      summary: Créer une commande
-      description: |
-        Rôle requis : **CLIENT**. Le prix est toujours relu en base (jamais fourni par
-        le client). Décrémente le stock de façon atomique. Pour `CREDIT_BANCAIRE`, refuse
-        (400) si le commerçant n'a pas de numéro Coris Money.
+      summary: Crée la commande d'un produit (CLIENT)
+      description: Réserve une unité de stock. Le prix vient toujours de la base. Statut initial `CREEE`.
       requestBody:
         required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [productId, paymentMode]
-              properties:
-                productId: { type: string, format: uuid }
-                paymentMode: { type: string, enum: [EPARGNE, CREDIT_BANCAIRE] }
-            example: { productId: "6714eaf9-e74b-4716-b53a-efe2bad13ac6", paymentMode: EPARGNE }
+        content: { application/json: { schema: { type: object, required: [productId], properties: { productId: { type: string } } } } }
       responses:
-        "201":
-          description: Commande créée (avec `savingsPlan` si mode Épargne)
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Order" }
-        "400": { $ref: "#/components/responses/BadRequestError" }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-        "409":
-          description: Article indisponible / stock épuisé (vente concurrente)
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
+        "201": { description: Commande créée avec `orderNumber` }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: Produit épuisé, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    get:
+      tags: [Orders]
+      summary: Mes commandes (CLIENT)
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/OrderStatus" } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200": { description: Page de commandes }
   /orders/{id}:
     get:
       tags: [Orders]
-      summary: Détail d'une commande
-      description: Rôle requis **CLIENT**, propriétaire uniquement (404 sinon, jamais 403).
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+      summary: Détail d'une commande (propriétaire uniquement, sinon 404)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
-        "200":
-          description: Détail de la commande
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Order" }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-
-  /orders/{id}/savings/extend:
+        "200": { description: Commande avec épargne / coffre / demande de crédit / crédit }
+        "404": { $ref: "#/components/responses/Error" }
+  /orders/{id}/select-financing:
     post:
       tags: [Orders]
-      summary: Demander une extension de délai d'Épargne
+      summary: Choisit le mode de financement
       description: |
-        Rôle requis **CLIENT**. Maximum 2 mois au total, doit être demandé avant
-        l'échéance courante.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+        `VAULT` et `CREDIT` exigent un profil crédit bancaire déjà `VALIDE` (Coffre : salarié uniquement).
+        La commande passe à `FINANCEMENT_EN_COURS`.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       requestBody:
         required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [months]
-              properties: { months: { type: integer, minimum: 1, maximum: 2 } }
+        content: { application/json: { schema: { type: object, required: [mode], properties: { mode: { type: string, enum: [SAVINGS, VAULT, CREDIT] } } } } }
       responses:
-        "200":
-          description: Commande mise à jour
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Order" }
-        "400": { $ref: "#/components/responses/BadRequestError" }
-        "409":
-          description: Échéance déjà dépassée, ou Épargne déjà terminée
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
-  /orders/{id}/bank-credit:
-    post:
+        "200": { description: Commande mise à jour }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /orders/{id}/qr:
+    get:
       tags: [Orders]
-      summary: Soumettre (ou réutiliser) le dossier de Crédit Bancaire
+      summary: Jeton QR serveur de la commande prête à livrer
       description: |
-        Rôle requis **CLIENT**. Si employeur/autorisation/bulletins sont déjà au dossier
-        du client (validés lors d'une commande précédente), aucun fichier n'est requis :
-        le dossier est simplement réutilisé. Sinon, tous les champs sont obligatoires.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+        `data` = `{ qrToken, expiresAt }`. Le QR ne contient que ce jeton opaque. Un jeton expiré est
+        régénéré (l'ancien est invalidé). 403 tant que le financement n'est pas validé.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Jeton QR }
+        "403": { $ref: "#/components/responses/Error" }
+  # ------------------------------------------------------------------ SAVINGS
+  /orders/{id}/savings:
+    post:
+      tags: [Savings]
+      summary: Ouvre le plan d'épargne de la commande
+      description: |
+        Versement minimum / durée max selon le prix : ≤50 000 → 1 000 FCFA, 8 mois ; 50 000–100 000 → 2 000, 18 mois ;
+        >100 000 → 5 000, 36 mois (paramétrable). La date de départ est celle du **premier versement validé**.
+        `paymentReference` = `orderId` à fournir lors du versement Mobile Money.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       requestBody:
+        content: { application/json: { schema: { type: object, properties: { durationMonths: { type: integer, minimum: 1 } } } } }
+      responses:
+        "201": { description: Épargne créée }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /savings/{id}:
+    get:
+      tags: [Savings]
+      summary: Détail (progression, reste, jours restants)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Épargne }
+  /savings/{id}/history:
+    get:
+      tags: [Savings]
+      summary: Historique des paiements de l'épargne
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Limit" }]
+      responses:
+        "200": { description: Page de paiements }
+  /savings/{id}/extension:
+    post:
+      tags: [Savings]
+      summary: Prolonge l'échéance (2 mois maximum au total, avant l'échéance)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [months], properties: { months: { type: integer, minimum: 1, maximum: 2 } } } } }
+      responses:
+        "200": { description: Épargne en `PROLONGATION` }
+        "400": { $ref: "#/components/responses/Error" }
+  # ------------------------------------------------------------------ VAULT
+  /orders/{id}/vault:
+    post:
+      tags: [Vault]
+      summary: Programme le Coffre (prélèvement automatique sur salaire)
+      description: "Réservé aux salariés dont le profil crédit est déjà validé. `multipart` : `durationMonths` + `salaryDebitAuthorization` (optionnel)."
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
         content:
           multipart/form-data:
             schema:
               type: object
+              required: [durationMonths]
               properties:
-                employer: { type: string, example: "Ministere de la Sante" }
-                registrationNumber: { type: string, description: "Si fonctionnaire d'État" }
-                bankAuthorization: { type: string, format: binary, description: "Autorisation de prélèvement signée" }
-                paySlips: { type: string, format: binary, description: "3 derniers bulletins de salaire" }
+                durationMonths: { type: integer }
+                salaryDebitAuthorization: { type: string, format: binary }
       responses:
-        "200":
-          description: Statut du dossier
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  dossierStatus: { type: string, enum: [NON_SOUMIS, EN_ATTENTE, VALIDE, REJETTE] }
-                  reused: { type: boolean }
-        "400": { $ref: "#/components/responses/BadRequestError" }
-
-  /orders/{id}/bank-credit/terms:
+        "201": { description: Coffre créé }
+        "403": { $ref: "#/components/responses/Error" }
+  /vaults/{id}:
+    get:
+      tags: [Vault]
+      summary: Détail du Coffre
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Coffre }
+  /vaults/{id}/use:
     post:
-      tags: [Orders]
-      summary: Enregistrer les modalités du crédit (durée)
-      description: |
-        Rôle requis **CLIENT**. Le Backend calcule et valide lui-même la durée maximale
-        autorisée pour le prix de l'article (refuse toute durée hors limite, 400). Crée
-        le dossier `bank_credits` (statut `EN_ATTENTE`), assigné à une banque partenaire.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+      tags: [Vault]
+      summary: Utilise un Coffre complet (`OBJECTIF_ATTEINT`) → commande prête + QR
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: "`data` = { orderId, status, qrToken, expiresAt }" }
+        "409": { $ref: "#/components/responses/Error" }
+  /vaults/{id}/switch-to-credit:
+    post:
+      tags: [Vault]
+      summary: Bascule vers un crédit pour le reste à financer
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [durationMonths], properties: { durationMonths: { type: integer } } } } }
+      responses:
+        "201": { description: Demande de crédit créée, Coffre `BASCULE_VERS_CREDIT` }
+        "403": { $ref: "#/components/responses/Error" }
+  # ------------------------------------------------------------------ CREDIT
+  /credit/profile:
+    get:
+      tags: [Credit]
+      summary: Mon profil crédit (`NON_CONFIGURE` s'il n'existe pas)
+      responses:
+        "200": { description: Profil }
+    post:
+      tags: [Credit]
+      summary: Soumet le profil crédit à la banque
+      description: "`multipart` : `employer`, `registrationNumber?`, `bankAuthorization` (fichier), `paySlips` (fichier). Statut → `EN_ANALYSE`."
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
               type: object
-              required: [months]
-              properties: { months: { type: integer, minimum: 1 } }
-            example: { months: 18 }
+              required: [employer, bankAuthorization, paySlips]
+              properties:
+                employer: { type: string }
+                registrationNumber: { type: string }
+                bankAuthorization: { type: string, format: binary }
+                paySlips: { type: string, format: binary }
       responses:
-        "201":
-          description: Dossier de crédit créé
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/BankCredit" }
-        "400": { $ref: "#/components/responses/BadRequestError" }
-        "409":
-          description: Modalités déjà enregistrées pour cette commande
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
-  /orders/{id}/qr:
+        "201": { description: Profil soumis }
+        "409": { $ref: "#/components/responses/Error" }
+  /credit/requests:
+    post:
+      tags: [Credit]
+      summary: Crée la demande de crédit d'une commande
+      description: "Profil `VALIDE` requis. Durée validée par le backend (≤50 000 : 8 mois ; 50 000–100 000 : 12 ; au-delà +6 mois par tranche de 50 000). Montant à virer = prix + frais."
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [orderId, durationMonths], properties: { orderId: { type: string }, durationMonths: { type: integer } } } } }
+      responses:
+        "201": { description: Demande `ENVOYEE` }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /credit/requests/{id}:
     get:
-      tags: [Orders]
-      summary: Récupérer le code QR de retrait
-      description: |
-        Rôle requis **CLIENT**. Refuse (403) tant que le financement n'est pas validé
-        (Épargne à 100% ou Crédit approuvé + virement banque reçu).
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+      tags: [Credit]
+      summary: Détail d'une demande de crédit
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
-        "200":
-          description: Token QR
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { orderId: { type: string }, qrCodeToken: { type: string } }
-        "403":
-          description: Financement pas encore validé
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
+        "200": { description: Demande }
+  /credits/{id}:
+    get:
+      tags: [Credit]
+      summary: Détail d'un crédit
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Crédit }
   # ------------------------------------------------------------------ MERCHANT
-  /merchant/shop:
+  /merchant/store:
+    get: { tags: [Merchant], summary: Ma boutique, responses: { "200": { description: Boutique } } }
     post:
       tags: [Merchant]
-      summary: Créer sa boutique
-      description: Rôle requis **COMMERCANT**. Un seul par commerçant (409 si déjà créée — utiliser PUT).
-      requestBody: { $ref: "#/components/requestBodies/ShopBody" }
-      responses:
-        "201": { description: Boutique créée, content: { application/json: { schema: { $ref: "#/components/schemas/Shop" } } } }
-        "409": { $ref: "#/components/responses/ConflictError" }
+      summary: Crée ma boutique (compte VALIDE requis)
+      requestBody: { $ref: "#/components/requestBodies/Store" }
+      responses: { "201": { description: Boutique créée }, "403": { $ref: "#/components/responses/Error" } }
     put:
       tags: [Merchant]
-      summary: Modifier sa boutique
-      description: Rôle requis **COMMERCANT**. 404 si aucune boutique n'existe encore.
-      requestBody: { $ref: "#/components/requestBodies/ShopBody" }
-      responses:
-        "200": { description: Boutique mise à jour, content: { application/json: { schema: { $ref: "#/components/schemas/Shop" } } } }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-
+      summary: Met à jour ma boutique
+      requestBody: { $ref: "#/components/requestBodies/Store" }
+      responses: { "200": { description: Boutique mise à jour } }
   /merchant/products:
     post:
       tags: [Merchant]
-      summary: Créer un article
-      description: |
-        Rôle requis **COMMERCANT**. `isVisible` est déduit automatiquement de
-        `initialStock` (invisible si stock nul).
+      summary: Publie un produit
+      description: "`price` : FCFA entier, **définitif** après publication."
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [title, price, initialStock]
+              required: [title, price, stock]
               properties:
                 title: { type: string }
                 description: { type: string }
-                price: { type: number, minimum: 0.01 }
-                initialStock: { type: integer, minimum: 0 }
-            example: { title: "Chaise plastique", price: 30000, initialStock: 5 }
-      responses:
-        "201": { description: Article créé, content: { application/json: { schema: { $ref: "#/components/schemas/Product" } } } }
-        "400": { $ref: "#/components/responses/BadRequestError" }
-
+                price: { type: integer, minimum: 1 }
+                stock: { type: integer, minimum: 0 }
+                isPublished: { type: boolean }
+      responses: { "201": { description: Produit créé } }
   /merchant/products/{id}:
-    put:
+    patch:
       tags: [Merchant]
-      summary: Modifier un article (prix, stock, titre, description)
-      description: |
-        Rôle requis **COMMERCANT**, propriétaire uniquement (404 sinon). Si
-        `remainingStock` est fourni, `isVisible` est recalculé automatiquement.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+      summary: Modifie titre, description, stock ou publication
+      description: Toute tentative de modifier `price` est refusée (422).
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       requestBody:
+        required: true
         content:
           application/json:
             schema:
@@ -537,21 +450,22 @@ paths:
               properties:
                 title: { type: string }
                 description: { type: string }
-                price: { type: number }
-                remainingStock: { type: integer, minimum: 0 }
-      responses:
-        "200": { description: Article mis à jour, content: { application/json: { schema: { $ref: "#/components/schemas/Product" } } } }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-
+                stock: { type: integer, minimum: 0 }
+                isPublished: { type: boolean }
+      responses: { "200": { description: Produit mis à jour }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Merchant]
+      summary: Supprime un produit (suppression logique)
+      description: Refusée (409) tant qu'une commande non terminée le référence.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses: { "204": { description: Supprimé }, "409": { $ref: "#/components/responses/Error" } }
   /merchant/products/{id}/media:
     post:
       tags: [Merchant]
-      summary: Ajouter des photos / spots publicitaires à un article
-      description: |
-        Rôle requis **COMMERCANT**, propriétaire uniquement. Médias publics, servis
-        ensuite sur `/media/<fichier>`.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+      summary: Ajoute photos (`photos`, 10 max) et spots publicitaires (`spots`, 5 max)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       requestBody:
+        required: true
         content:
           multipart/form-data:
             schema:
@@ -559,638 +473,357 @@ paths:
               properties:
                 photos: { type: array, items: { type: string, format: binary } }
                 spots: { type: array, items: { type: string, format: binary } }
-      responses:
-        "201":
-          description: Médias enregistrés
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { data: { type: array, items: { $ref: "#/components/schemas/ProductMedia" } } }
-        "400": { $ref: "#/components/responses/BadRequestError" }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-
+      responses: { "201": { description: Médias ajoutés } }
   /merchant/orders:
     get:
       tags: [Merchant]
-      summary: Ventes en cours et commandes prêtes
-      description: |
-        Rôle requis **COMMERCANT**. Sans filtre, renvoie `EN_COURS` + `PRET_A_LIVRER`
-        uniquement.
+      summary: Commandes de ma boutique
       parameters:
-        - name: status
-          in: query
-          schema: { type: string, enum: [EN_COURS, PRET_A_LIVRER, LIVRE, ECHEC_PENALISE, ANNULE] }
-      responses:
-        "200":
-          description: Commandes
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { data: { type: array, items: { $ref: "#/components/schemas/Order" } } }
-
-  /merchant/orders/{id}/scan-qr:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/OrderStatus" } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de commandes } }
+  /merchant/settlements:
+    get:
+      tags: [Merchant]
+      summary: Mes règlements
+      parameters: [{ $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Limit" }]
+      responses: { "200": { description: Page de règlements } }
+  /merchant/qr/scan:
     post:
       tags: [Merchant]
-      summary: Scanner le code QR d'un client pour valider le retrait
+      summary: Valide un QR côté serveur (aucun changement d'état)
       description: |
-        Rôle requis **COMMERCANT**, propriétaire de la boutique concernée (404 sinon).
-        Comparaison du token à temps constant. Refuse le double scan (409) et les
-        commandes non prêtes (409). Pour l'Épargne, déclenche aussitôt le reversement
-        commerçant (dans la même transaction) ; pour le Crédit Bancaire, le reversement
-        est un acte séparé de l'Admin (`POST /admin/credits/:id/payout`).
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+        404 jeton inconnu ou d'une autre boutique (indistinguables) ; 409 déjà utilisé ou commande non prête ;
+        410 `QR_EXPIRED`.
+      requestBody: { $ref: "#/components/requestBodies/QrToken" }
+      responses:
+        "200": { description: "`data` = { orderId, orderNumber, product, amount, financingMode, client, qrExpiresAt }" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+  /merchant/orders/{id}/withdrawal-confirm:
+    post:
+      tags: [Merchant]
+      summary: Confirme le retrait en boutique
+      description: Consomme le jeton (atomique), commande → `LIVREE`, règlement commerçant créé (`EN_ATTENTE`) — paiement commerçant déclenché après retrait confirmé.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody: { $ref: "#/components/requestBodies/QrToken" }
+      responses:
+        "200": { description: Retrait confirmé }
+        "409": { $ref: "#/components/responses/Error" }
+  # ------------------------------------------------------------------ BANK
+  /bank/credit-profiles:
+    get:
+      tags: [Bank]
+      summary: Profils crédit assignés (par défaut `EN_ANALYSE`)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [NON_CONFIGURE, EN_ANALYSE, VALIDE, REFUSE] } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de profils } }
+  /bank/credit-profiles/{id}/decision:
+    patch:
+      tags: [Bank]
+      summary: Valide ou refuse un profil
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [decision], properties: { decision: { type: string, enum: [VALIDE, REFUSE] }, reason: { type: string } } } } }
+      responses: { "200": { description: Décision enregistrée }, "409": { $ref: "#/components/responses/Error" } }
+  /bank/credit-requests:
+    get:
+      tags: [Bank]
+      summary: Demandes de crédit assignées (par défaut `ENVOYEE` + `EN_ANALYSE`)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [BROUILLON, ENVOYEE, EN_ANALYSE, ACCEPTEE, REFUSEE] } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de demandes } }
+  /bank/credit-requests/{id}/decision:
+    patch:
+      tags: [Bank]
+      summary: Accepte ou refuse une demande
+      description: "`ACCEPTEE` crée le Crédit `EN_ATTENTE_DE_VIREMENT`. `REFUSEE` remet la commande à `CREEE`."
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [decision], properties: { decision: { type: string, enum: [ACCEPTEE, REFUSEE] }, reason: { type: string } } } } }
+      responses: { "200": { description: Décision enregistrée }, "409": { $ref: "#/components/responses/Error" } }
+  /bank/transfers/notice:
+    post:
+      tags: [Bank]
+      summary: Avis de virement banque → NanoPay
+      description: |
+        `amount` doit égaler exactement le montant à virer (prix + frais), sinon 422. `transferReference` est UNIQUE :
+        un même virement n'est jamais comptabilisé deux fois. Crédit `FINANCE`, commande `FINANCEE` → `PRETE_A_LIVRER` + QR.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [qrCodeToken]
-              properties: { qrCodeToken: { type: string } }
-      responses:
-        "200":
-          description: Commande livrée (+ reversement si Épargne)
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  order: { $ref: "#/components/schemas/Order" }
-                  payout: { oneOf: [{ $ref: "#/components/schemas/MerchantPayout" }, { type: "null" }] }
-        "400":
-          description: Code QR invalide
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-        "409":
-          description: Commande déjà livrée (double scan) ou pas encore prête
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-
-  /merchant/payouts:
+              required: [creditId, transferReference, amount]
+              properties:
+                creditId: { type: string }
+                transferReference: { type: string }
+                amount: { type: integer }
+      responses: { "201": { description: Virement enregistré }, "422": { $ref: "#/components/responses/Error" } }
+  # ------------------------------------------------------------------ ADMIN
+  /admin/dashboard:
+    get: { tags: [Admin], summary: Indicateurs globaux, responses: { "200": { description: Tableau de bord } } }
+  /admin/clients:
     get:
-      tags: [Merchant]
-      summary: Historique des reversements
-      description: Rôle requis. **COMMERCANT**.
-      responses:
-        "200":
-          description: Reversements, les plus récents en premier
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { data: { type: array, items: { $ref: "#/components/schemas/MerchantPayout" } } }
-
-  # ------------------------------------------------------------------ BANK
-  /bank/credit-requests:
-    get:
-      tags: [Bank]
-      summary: Dossiers de crédit à examiner
-      description: Rôle requis **BANQUE**. Ne liste que les dossiers assignés à la banque connectée, statut `EN_ATTENTE`.
-      responses:
-        "200":
-          description: Dossiers
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { data: { type: array, items: { $ref: "#/components/schemas/BankCredit" } } }
-
-  /bank/credit-requests/{id}:
-    get:
-      tags: [Bank]
-      summary: Détail d'un dossier de crédit (avec pièces du client)
-      description: Rôle requis **BANQUE**, dossier assigné à la banque connectée uniquement (404 sinon).
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
-      responses:
-        "200": { description: Détail, content: { application/json: { schema: { $ref: "#/components/schemas/BankCredit" } } } }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-
-  /bank/credit-requests/{id}/approve:
-    post:
-      tags: [Bank]
-      summary: Approuver un dossier de crédit
-      description: |
-        Rôle requis **BANQUE**. Rend l'autorisation de prélèvement du client réutilisable
-        pour ses futurs achats (`bankDossierStatus = VALIDE`). Notifie l'Admin et le client.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
-      responses:
-        "200": { description: Approuvé, content: { application/json: { schema: { type: object, properties: { id: { type: string }, status: { type: string } } } } } }
-        "409":
-          description: Dossier déjà traité
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-
-  /bank/credit-requests/{id}/reject:
-    post:
-      tags: [Bank]
-      summary: Rejeter un dossier de crédit
-      description: Rôle requis **BANQUE**. Annule la commande associée. Le dossier KYC du client n'est pas affecté.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
+      tags: [Admin]
+      summary: Clients
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [ACTIF, SUSPENDU] } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de clients } }
+  /admin/clients/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Suspend / réactive un client
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [ACTIF, SUSPENDU] }, reason: { type: string } } } } }
+      responses: { "200": { description: Client mis à jour } }
+  /admin/merchants:
+    get:
+      tags: [Admin]
+      summary: Commerçants
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [EN_ATTENTE, VALIDE, SUSPENDU] } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de commerçants } }
+  /admin/merchants/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Valide / suspend un commerçant
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [VALIDE, SUSPENDU] }, reason: { type: string } } } } }
+      responses: { "200": { description: Commerçant mis à jour } }
+  /admin/savings:
+    get:
+      tags: [Admin]
+      summary: Épargnes
+      parameters: [{ $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Limit" }]
+      responses: { "200": { description: Page d'épargnes } }
+  /admin/savings/{id}/refund:
+    post:
+      tags: [Admin]
+      summary: Marque le remboursement (85 %) d'une épargne `ECHOUEE` comme versé → `REMBOURSEE`
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { reference: { type: string } } } } }
+      responses: { "200": { description: Remboursée }, "409": { $ref: "#/components/responses/Error" } }
+  /admin/credits:
+    get:
+      tags: [Admin]
+      summary: Crédits
+      parameters: [{ $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Limit" }]
+      responses: { "200": { description: Page de crédits } }
+  /admin/payments:
+    get:
+      tags: [Admin]
+      summary: Paiements
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [INITIE, EN_ATTENTE, CONFIRME, ECHOUE] } }
+        - { name: orderId, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de paiements } }
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: Journal d'audit (date, heure, identifiant, acteur, montant, statut)
+      parameters:
+        - { name: entityType, in: query, schema: { type: string } }
+        - { name: entityId, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: userId, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page d'entrées d'audit } }
+  /admin/settlements:
+    get:
+      tags: [Admin]
+      summary: Règlements commerçants
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [EN_ATTENTE, PAYE] } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de règlements } }
+  /admin/settlements/{id}/paid:
+    post:
+      tags: [Admin]
+      summary: Confirme le versement du règlement → commande `TERMINEE`, crédit `TERMINE`
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [reference], properties: { reference: { type: string } } } } }
+      responses: { "200": { description: Réglé }, "409": { $ref: "#/components/responses/Error" } }
+  /admin/settings/financial:
+    get: { tags: [Admin], summary: Paramètres financiers effectifs, responses: { "200": { description: Paramètres } } }
+    patch:
+      tags: [Admin]
+      summary: Modifie les paramètres financiers (pénalité, commissions, paliers, durées, TTL du QR…)
+      description: Corps partiel ; toute clé inconnue est refusée (422). Tracé dans l'audit.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/FinancialParams" } } }
+      responses: { "200": { description: Paramètres mis à jour } }
+  # ------------------------------------------------------------------ WEBHOOKS
+  /webhooks/payment:
+    post:
+      tags: [Webhooks]
+      summary: Événement de paiement Mobile Money / infrastructure interopérable
+      description: |
+        Public mais **signé** : `X-Signature` = HMAC-SHA256 hexadécimal du **corps brut** avec `PAYMENT_WEBHOOK_SECRET`.
+        Signature, montant, commande, devise (`XOF`) et statut sont vérifiés avant toute écriture métier.
+        `providerTransactionId` est UNIQUE : un même événement n'est jamais comptabilisé deux fois (rejeu → `duplicate: true`).
+        `PENDING` puis `SUCCESS` pour la même transaction est géré. Un événement métier invalide est enregistré
+        (`result: REJECTED`, avec `reason`) et renvoyé en 200 pour éviter un rejeu infini.
+        Le versement est rattaché à l'épargne ou au Coffre de `orderId`.
+      security: []
+      parameters:
+        - { name: X-Signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
-              properties: { reason: { type: string, maxLength: 500 } }
+              required: [providerTransactionId, orderId, amount, currency, status, timestamp]
+              properties:
+                providerTransactionId: { type: string }
+                orderId: { type: string }
+                amount: { type: integer, minimum: 1 }
+                currency: { type: string, example: XOF }
+                status: { type: string, enum: [SUCCESS, FAILED, PENDING] }
+                payerReference: { type: string }
+                timestamp: { type: string, format: date-time }
+                provider: { type: string }
       responses:
-        "200": { description: Rejeté }
-        "409": { $ref: "#/components/responses/ConflictError" }
-
-  /bank/transfers/{id}/execute:
-    post:
-      tags: [Bank]
-      summary: Exécuter le virement Banque → NanaPay
-      description: |
-        Rôle requis **BANQUE**. Exige un dossier déjà `APPROUVE`. Génère le code QR du
-        client et passe la commande à `PRET_A_LIVRER`. **Protégé par idempotence** :
-        en-tête `Idempotency-Key` obligatoire (un rejeu avec la même clé renvoie la même
-        réponse sans ré-exécuter l'action).
+        "200": { description: "`data` = { received, duplicate, result: APPLIED|IGNORED|REJECTED, reason? }" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  # ------------------------------------------------------------------ NOTIFICATIONS / DOCUMENTS
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Mes notifications (polling)
       parameters:
-        - $ref: "#/components/parameters/IdPathParam"
-        - $ref: "#/components/parameters/IdempotencyKeyHeader"
-      responses:
-        "200": { description: Virement exécuté }
-        "400":
-          description: En-tête Idempotency-Key manquant
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-        "409":
-          description: Dossier pas encore approuvé, ou virement déjà traité
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-
-  # ------------------------------------------------------------------ ADMIN
-  /admin/clients/pending:
-    get:
-      tags: [Admin]
-      summary: Dossiers Client en attente de validation
-      description: Rôle requis. **ADMIN**.
-      responses:
-        "200":
-          description: Dossiers en attente
-          content:
-            application/json:
-              schema: { type: object, properties: { data: { type: array, items: { $ref: "#/components/schemas/PendingClient" } } } }
-
-  /admin/clients/{id}/approve:
-    post:
-      tags: [Admin]
-      summary: Approuver un compte Client
-      description: |
-        Rôle requis **ADMIN**. Active le compte, génère un mot de passe temporaire et
-        l'envoie par e-mail (échec d'envoi non bloquant), notifie le client.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
-      responses:
-        "200": { description: Approuvé }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-        "409": { $ref: "#/components/responses/ConflictError" }
-
-  /admin/clients/{id}/reject:
-    post:
-      tags: [Admin]
-      summary: Rejeter un compte Client
-      description: Rôle requis. **ADMIN**.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
-      requestBody:
-        content:
-          application/json:
-            schema: { type: object, properties: { reason: { type: string, maxLength: 500 } } }
-      responses:
-        "200": { description: Rejeté }
-        "409": { $ref: "#/components/responses/ConflictError" }
-
-  /admin/merchants/pending:
-    get:
-      tags: [Admin]
-      summary: Dossiers Commerçant en attente de validation
-      description: Rôle requis. **ADMIN**.
-      responses:
-        "200":
-          description: Dossiers en attente
-          content:
-            application/json:
-              schema: { type: object, properties: { data: { type: array, items: { $ref: "#/components/schemas/PendingMerchant" } } } }
-
-  /admin/merchants/{id}/approve:
-    post:
-      tags: [Admin]
-      summary: Approuver un compte Commerçant
-      description: Rôle requis **ADMIN**. Active le compte et marque le commerçant vérifié.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
-      responses:
-        "200": { description: Approuvé }
-        "409": { $ref: "#/components/responses/ConflictError" }
-
-  /admin/merchants/{id}/reject:
-    post:
-      tags: [Admin]
-      summary: Rejeter un compte Commerçant
-      description: Rôle requis. **ADMIN**.
-      parameters: [{ $ref: "#/components/parameters/IdPathParam" }]
-      requestBody:
-        content:
-          application/json:
-            schema: { type: object, properties: { reason: { type: string, maxLength: 500 } } }
-      responses:
-        "200": { description: Rejeté }
-        "409": { $ref: "#/components/responses/ConflictError" }
-
-  /admin/savings:
-    get:
-      tags: [Admin]
-      summary: Suivi de toutes les Épargnes
-      description: |
-        Rôle requis **ADMIN**. `cadre` vaut `VERT` (terminée) ou `ROUGE` (en cours),
-        conformément au tableau de bord décrit dans le cahier des charges.
-      responses:
-        "200":
-          description: Épargnes
-          content:
-            application/json:
-              schema: { type: object, properties: { data: { type: array, items: { $ref: "#/components/schemas/AdminSavingsRow" } } } }
-
-  /admin/credits:
-    get:
-      tags: [Admin]
-      summary: Suivi de tous les dossiers de Crédit Bancaire
-      description: Rôle requis. **ADMIN**.
-      responses:
-        "200":
-          description: Dossiers de crédit
-          content:
-            application/json:
-              schema: { type: object, properties: { data: { type: array, items: { $ref: "#/components/schemas/BankCredit" } } } }
-
-  /admin/credits/{id}/payout:
-    post:
-      tags: [Admin]
-      summary: Procéder au virement commerçant (Crédit Bancaire)
-      description: |
-        Rôle requis **ADMIN**. Exige `transferStatus = VIREMENT_BANQUE_EFFECTUE`.
-        Applique la commission de 4% et marque le crédit `PAYE_AU_COMMERCANT`.
-        **Protégé par idempotence** : en-tête `Idempotency-Key` obligatoire.
-      parameters:
-        - $ref: "#/components/parameters/IdPathParam"
-        - $ref: "#/components/parameters/IdempotencyKeyHeader"
-      responses:
-        "200": { description: Reversement créé, content: { application/json: { schema: { $ref: "#/components/schemas/MerchantPayout" } } } }
-        "400":
-          description: En-tête Idempotency-Key manquant
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-        "409":
-          description: Virement de la banque pas encore reçu
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-
-  /admin/transactions:
-    get:
-      tags: [Admin]
-      summary: Vue agrégée des mouvements financiers
-      description: |
-        Rôle requis **ADMIN**. Combine les dépôts Épargne et les reversements
-        commerçants (les 100 plus récents de chaque, aucune table `transactions` dédiée
-        dans le schéma fourni).
-      responses:
-        "200":
-          description: Transactions
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  savingsDeposits: { type: array, items: { $ref: "#/components/schemas/SavingsDeposit" } }
-                  merchantPayouts: { type: array, items: { $ref: "#/components/schemas/MerchantPayout" } }
-
-  /admin/notifications:
-    get:
-      tags: [Admin]
-      summary: Notifications de l'Admin connecté
-      description: Rôle requis. **ADMIN**.
-      responses:
-        "200":
-          description: Notifications
-          content:
-            application/json:
-              schema: { type: object, properties: { data: { type: array, items: { $ref: "#/components/schemas/Notification" } } } }
-
-  # ------------------------------------------------------------------ WEBHOOKS
-  /webhooks/orange-money:
-    post:
-      tags: [Webhooks]
-      summary: Webhook de dépôt Orange Money
-      description: |
-        Public (authenticité vérifiée par signature fournisseur, pas par JWT). **Non
-        fonctionnel tant que l'intégration Orange Money réelle n'est pas branchée**
-        (`services/payment/OrangeMoneyProvider.ts` est un stub). Idempotent via la
-        contrainte unique sur `transaction_reference`, pas via en-tête.
-      security: []
-      requestBody:
-        content:
-          application/json:
-            schema: { type: object, description: "Format dépendant du fournisseur (à documenter une fois l'intégration branchée)." }
-      responses:
-        "200": { description: "Événement traité (ou ignoré si déjà vu)" }
-        "400":
-          description: Signature invalide
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-
-  /webhooks/coris-money:
-    post:
-      tags: [Webhooks]
-      summary: Webhook de dépôt Coris Money
-      description: Public. Même comportement que `/webhooks/orange-money`, non fonctionnel tant que l'intégration réelle n'est pas branchée.
-      security: []
-      requestBody:
-        content:
-          application/json:
-            schema: { type: object }
-      responses:
-        "200": { description: "Événement traité (ou ignoré si déjà vu)" }
-        "400":
-          description: Signature invalide
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-
-  # ------------------------------------------------------------------ DOCUMENTS
+        - { name: unread, in: query, schema: { type: string, enum: ["true", "false"] } }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses: { "200": { description: Page de notifications } }
+  /notifications/{id}/read:
+    patch:
+      tags: [Notifications]
+      summary: Marque une notification comme lue
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses: { "200": { description: Lue }, "404": { $ref: "#/components/responses/Error" } }
   /documents/{filename}:
     get:
       tags: [Documents]
-      summary: Consulter un document privé (CNIB, bulletins, autorisation)
-      description: |
-        Tout rôle authentifié. Le fichier n'est renvoyé que si le demandeur est le
-        propriétaire du document, un Admin, ou une Banque assignée à un dossier de
-        crédit de ce client. 404 sinon (n'indique jamais si le fichier existe).
-      parameters:
-        - name: filename
-          in: path
-          required: true
-          description: "Nom de fichier exact tel que renvoyé dans les champs se terminant par Url (ex: cnibRectoUrl)."
-          schema: { type: string }
-      responses:
-        "200":
-          description: Fichier (image ou PDF)
-          content:
-            image/jpeg: { schema: { type: string, format: binary } }
-            application/pdf: { schema: { type: string, format: binary } }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
-        "404": { $ref: "#/components/responses/NotFoundError" }
-
+      summary: Document privé (propriétaire, Admin, ou Banque assignée)
+      parameters: [{ name: filename, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: Fichier }, "403": { $ref: "#/components/responses/Error" } }
+  /documents/{filename}/temporary-url:
+    post:
+      tags: [Documents]
+      summary: Crée une URL temporaire (5 min) vers un document privé
+      parameters: [{ name: filename, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: "`data` = { url, expiresAt }" } }
+  /documents/temp/{token}:
+    get:
+      tags: [Documents]
+      summary: Accès via URL temporaire signée (sans en-tête Authorization)
+      security: []
+      parameters: [{ name: token, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: Fichier }, "401": { $ref: "#/components/responses/Error" } }
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
   parameters:
-    IdPathParam:
-      name: id
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
-    IdempotencyKeyHeader:
-      name: Idempotency-Key
-      in: header
-      required: true
-      description: Clé générée par l'appelant pour garantir qu'une répétition de la requête n'exécute pas l'action deux fois.
-      schema: { type: string }
-
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+    Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
   requestBodies:
-    ShopBody:
+    RefreshToken:
+      required: true
+      content: { application/json: { schema: { type: object, required: [refreshToken], properties: { refreshToken: { type: string } } } } }
+    QrToken:
+      required: true
+      content: { application/json: { schema: { type: object, required: [qrToken], properties: { qrToken: { type: string } } } } }
+    Store:
       required: true
       content:
         application/json:
           schema:
             type: object
-            required: [shopName, city, township, neighborhood]
+            required: [name, cityId, communeId]
             properties:
-              shopName: { type: string }
-              city: { type: string }
-              township: { type: string }
-              neighborhood: { type: string }
+              name: { type: string }
+              cityId: { type: string }
+              communeId: { type: string }
               addressDescription: { type: string }
-          example: { shopName: "Quincaillerie Kone", city: "Ouagadougou", township: "Baskuy", neighborhood: "Secteur 4" }
-
   responses:
-    UnauthorizedError:
-      description: Token d'accès manquant, invalide ou expiré
+    Error:
+      description: "Erreur — `{ code, message, details?, requestId }`"
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-    ForbiddenError:
-      description: Rôle non autorisé pour cette ressource
-      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-    NotFoundError:
-      description: Ressource introuvable (ou non accessible, jamais distingué d'un 403)
-      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-    ConflictError:
-      description: État de la ressource incompatible avec l'action demandée
-      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-    BadRequestError:
-      description: Requête invalide
-      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-    ValidationError:
-      description: Corps de requête invalide (validation Zod)
-      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-
   schemas:
+    Envelope:
+      type: object
+      properties:
+        data: {}
+        meta:
+          type: object
+          properties:
+            page: { type: integer }
+            limit: { type: integer }
+            total: { type: integer }
+            nextPage: { type: integer, nullable: true }
     Error:
       type: object
+      required: [code, message, requestId]
       properties:
-        error:
-          type: object
-          properties:
-            code: { type: string, example: "BAD_REQUEST" }
-            message: { type: string, example: "Message d'erreur lisible" }
-            details: {}
-
-    RegistrationResult:
-      type: object
-      properties:
-        id: { type: string, format: uuid }
-        email: { type: string, format: email }
-        status: { type: string, enum: [EN_ATTENTE_VALIDATION] }
-
-    AuthTokens:
-      type: object
-      properties:
-        accessToken: { type: string }
-        refreshToken: { type: string }
-        user:
-          type: object
-          properties:
-            id: { type: string }
-            email: { type: string }
-            role: { type: string, enum: [ADMIN, CLIENT, COMMERCANT, BANQUE] }
-            clientId: { type: string, nullable: true }
-            merchantId: { type: string, nullable: true }
-
-    ClientProfile:
-      type: object
-      properties:
-        id: { type: string }
-        firstName: { type: string }
-        lastName: { type: string }
-        phoneNumber: { type: string }
-        city: { type: string }
-        township: { type: string }
-        sector: { type: string }
-        employer: { type: string, nullable: true }
-        bankDossierStatus: { type: string, enum: [NON_SOUMIS, EN_ATTENTE, VALIDE, REJETTE] }
-        user:
-          type: object
-          properties:
-            email: { type: string }
-            accountStatus: { type: string, enum: [PENDING, APPROVED, REJECTED] }
-            isActive: { type: boolean }
-
-    SavingsSummary:
-      type: object
-      properties:
-        orderId: { type: string }
-        productTitle: { type: string }
-        status: { type: string }
-        targetAmount: { type: number }
-        currentSavedAmount: { type: number }
-        progressPercent: { type: integer }
-        remainingAmount: { type: number }
-        dueDate: { type: string, format: date-time }
-        daysRemaining: { type: integer }
-        isCompleted: { type: boolean }
-        penaltyApplied: { type: boolean }
-
-    AdminSavingsRow:
-      allOf:
-        - $ref: "#/components/schemas/SavingsSummary"
-        - type: object
-          properties:
-            client:
-              type: object
-              properties: { id: { type: string }, firstName: { type: string }, lastName: { type: string }, phoneNumber: { type: string } }
-            cadre: { type: string, enum: [ROUGE, VERT] }
-
-    Notification:
-      type: object
-      properties:
-        id: { type: string }
-        title: { type: string }
+        code: { type: string, example: VALIDATION_ERROR }
         message: { type: string }
-        isRead: { type: boolean }
-        metadata: {}
-        createdAt: { type: string, format: date-time }
-
-    Shop:
+        details: {}
+        requestId: { type: string }
+    OrderStatus:
+      type: string
+      enum: [CREEE, FINANCEMENT_EN_COURS, FINANCEE, PRETE_A_LIVRER, LIVREE, TERMINEE]
+    FinancialParams:
       type: object
       properties:
-        id: { type: string }
-        shopName: { type: string }
-        city: { type: string }
-        township: { type: string }
-        neighborhood: { type: string }
-        addressDescription: { type: string, nullable: true }
-
-    Product:
-      type: object
-      properties:
-        id: { type: string }
-        title: { type: string }
-        description: { type: string, nullable: true }
-        price: { type: number }
-        remainingStock: { type: integer }
-        isVisible: { type: boolean }
-        media: { type: array, items: { $ref: "#/components/schemas/ProductMedia" } }
-
-    ProductMedia:
-      type: object
-      properties:
-        id: { type: string }
-        mediaUrl: { type: string, example: "/media/9c1e....jpg" }
-        mediaType: { type: string, enum: [PHOTO, SPOT_PUB] }
-
-    Order:
-      type: object
-      properties:
-        id: { type: string }
-        clientId: { type: string }
-        productId: { type: string }
-        paymentMode: { type: string, enum: [EPARGNE, CREDIT_BANCAIRE] }
-        totalAmount: { type: number }
-        maxDurationMonths: { type: integer }
-        extendedMonths: { type: integer }
-        status: { type: string, enum: [EN_COURS, PRET_A_LIVRER, LIVRE, ECHEC_PENALISE, ANNULE] }
-        qrCodeToken: { type: string, nullable: true }
-        savingsPlan: { $ref: "#/components/schemas/SavingsPlan" }
-        bankCredit: { $ref: "#/components/schemas/BankCredit" }
-
-    SavingsPlan:
-      type: object
-      nullable: true
-      properties:
-        id: { type: string }
-        targetAmount: { type: number }
-        currentSavedAmount: { type: number }
-        minInstallmentAmount: { type: number }
-        dueDate: { type: string, format: date-time }
-        isCompleted: { type: boolean }
-        penaltyApplied: { type: boolean }
-
-    SavingsDeposit:
-      type: object
-      properties:
-        id: { type: string }
-        amount: { type: number }
-        transactionReference: { type: string }
-        operator: { type: string, enum: [ORANGE_MONEY, CORIS_MONEY] }
-        status: { type: string, enum: [SUCCESS, FAILED] }
-        depositDate: { type: string, format: date-time }
-
-    BankCredit:
-      type: object
-      nullable: true
-      properties:
-        id: { type: string }
-        orderId: { type: string }
-        bankId: { type: string }
-        monthlyInstallment: { type: number }
-        bankCommissionAmount: { type: number, description: "2% du prix de l'article" }
-        totalAmountToWire: { type: number, description: "Prix + 2%, montant que la banque vire à NanaPay" }
-        approvalStatus: { type: string, enum: [EN_ATTENTE, APPROUVE, REJETTE] }
-        transferStatus: { type: string, enum: [NON_EFFECTUE, VIREMENT_BANQUE_EFFECTUE, PAYE_AU_COMMERCANT] }
-        approvalDate: { type: string, format: date-time, nullable: true }
-
-    MerchantPayout:
-      type: object
-      properties:
-        id: { type: string }
-        orderId: { type: string }
-        merchantId: { type: string }
-        grossAmount: { type: number }
-        nanapayCommissionRate: { type: number, description: "En pourcentage (ex: 8 pour 8%)" }
-        commissionAmount: { type: number }
-        netAmountPaid: { type: number }
-        payoutChannel: { type: string, enum: [ORANGE_MONEY, CORIS_MONEY, VIREMENT_BANCAIRE] }
-        payoutReference: { type: string, nullable: true, description: "Référence du virement réel — null tant que l'intégration Mobile Money n'est pas branchée" }
-        payoutDate: { type: string, format: date-time }
-
-    PendingClient:
-      type: object
-      properties:
-        id: { type: string }
-        firstName: { type: string }
-        lastName: { type: string }
-        phoneNumber: { type: string }
-        city: { type: string }
-        township: { type: string }
-        sector: { type: string }
-        cnibRectoUrl: { type: string }
-        cnibVersoUrl: { type: string }
-        user: { type: object, properties: { id: { type: string }, email: { type: string }, accountStatus: { type: string } } }
-
-    PendingMerchant:
-      type: object
-      properties:
-        id: { type: string }
-        firstName: { type: string }
-        lastName: { type: string }
-        ifuRccmNumber: { type: string }
-        city: { type: string }
-        orangeMoneyNumber: { type: string, nullable: true }
-        corisMoneyNumber: { type: string, nullable: true }
-        defaultPayoutAccount: { type: string, enum: [ORANGE_MONEY, CORIS_MONEY] }
-        cnibRectoUrl: { type: string }
-        cnibVersoUrl: { type: string }
-        user: { type: object, properties: { id: { type: string }, email: { type: string }, accountStatus: { type: string } } }
+        savingsTiers:
+          type: array
+          items:
+            type: object
+            properties:
+              maxAmount: { type: integer, nullable: true }
+              minInstallment: { type: integer }
+              maxDurationMonths: { type: integer }
+        savingsExtensionMaxMonths: { type: integer }
+        savingsPenaltyRate: { type: number, example: 0.15 }
+        savingsCommissionRates:
+          type: object
+          properties: { tier1: { type: number }, tier2: { type: number }, tier3: { type: number } }
+        creditTier1MaxMonths: { type: integer }
+        creditTier2MaxMonths: { type: integer }
+        creditExtraMonthsPerBracket: { type: integer }
+        creditBracketSize: { type: integer }
+        creditBankFeeRate: { type: number, example: 0.02 }
+        creditMerchantCommissionRate: { type: number, example: 0.04 }
+        qrTtlHours: { type: integer, example: 72 }

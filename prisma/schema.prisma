@@ -1,8 +1,9 @@
-// Schema NanaPay - PostgreSQL
-// Base sur le schema SQL fourni dans le cahier des charges (users, clients, merchants,
-// shops, products, product_media, orders, savings_plans, savings_deposits, bank_credits,
-// merchant_payouts, order_deliveries), complete par les tables techniques demandees dans
-// le cahier de taches Backend (audit_logs, notifications, refresh_tokens, idempotency_keys).
+// Schema NanoPay - PostgreSQL
+// Refonte alignee sur "NanoPay - Cahier de construction BACKEND" :
+//  - commande centrale unique (Order) reliant Client, Commercant, Banque et Admin ;
+//  - trois modes de financement : Epargne, Coffre (prelevement salaire), Credit ;
+//  - statuts implementes exactement comme dans le cahier (section 3) ;
+//  - montants en FCFA ENTIERS (Int), jamais de flottant (section 8).
 
 generator client {
   provider = "prisma-client-js"
@@ -18,61 +19,100 @@ datasource db {
 // ------------------------------------------------------------------
 
 enum UserRole {
-  ADMIN
   CLIENT
-  COMMERCANT
-  BANQUE
+  MERCHANT
+  BANK
+  ADMIN
 }
 
-// Ajoute par rapport au schema SQL initial (qui n'avait que is_active BOOLEAN) : un simple
-// booleen ne permet pas de distinguer "en attente de revue" de "rejete par l'Admin" pour
-// GET /admin/clients|merchants/pending. isActive reste la porte d'entree effective au login.
-enum AccountStatus {
-  PENDING
-  APPROVED
-  REJECTED
+enum ClientStatus {
+  ACTIF
+  SUSPENDU
 }
 
-enum BankDossierStatus {
-  NON_SOUMIS
+enum MerchantStatus {
   EN_ATTENTE
   VALIDE
-  REJETTE
+  SUSPENDU
 }
 
-enum PaymentMode {
-  EPARGNE
-  CREDIT_BANCAIRE
+enum CreditProfileStatus {
+  NON_CONFIGURE
+  EN_ANALYSE
+  VALIDE
+  REFUSE
+}
+
+enum CreditRequestStatus {
+  BROUILLON
+  ENVOYEE
+  EN_ANALYSE
+  ACCEPTEE
+  REFUSEE
+}
+
+enum CreditStatus {
+  ACCEPTE
+  EN_ATTENTE_DE_VIREMENT
+  FINANCE
+  TERMINE
+}
+
+enum SavingsStatus {
+  EN_COURS
+  PROLONGATION
+  ATTEINTE
+  ECHOUEE
+  REMBOURSEE
+}
+
+enum VaultStatus {
+  PROGRAMME
+  PRELEVEMENT_EN_COURS
+  OBJECTIF_ATTEINT
+  UTILISE
+  BASCULE_VERS_CREDIT
+}
+
+enum PaymentStatus {
+  INITIE
+  EN_ATTENTE
+  CONFIRME
+  ECHOUE
+}
+
+enum PaymentKind {
+  SAVINGS_DEPOSIT
+  VAULT_DEBIT
+  SAVINGS_REFUND
+  BANK_TRANSFER
+  MERCHANT_PAYOUT
 }
 
 enum OrderStatus {
-  EN_COURS
-  PRET_A_LIVRER
-  LIVRE
-  ECHEC_PENALISE
-  ANNULE
+  CREEE
+  FINANCEMENT_EN_COURS
+  FINANCEE
+  PRETE_A_LIVRER
+  LIVREE
+  TERMINEE
 }
 
-enum MediaType {
-  PHOTO
-  SPOT_PUB
+enum FinancingMode {
+  SAVINGS
+  VAULT
+  CREDIT
 }
 
-enum DepositStatus {
-  SUCCESS
-  FAILED
+enum QrStatus {
+  GENERE
+  UTILISE
+  EXPIRE
 }
 
-enum ApprovalStatus {
+enum SettlementStatus {
   EN_ATTENTE
-  APPROUVE
-  REJETTE
-}
-
-enum TransferStatus {
-  NON_EFFECTUE
-  VIREMENT_BANQUE_EFFECTUE
-  PAYE_AU_COMMERCANT
+  PAYE
 }
 
 enum PayoutChannel {
@@ -81,138 +121,165 @@ enum PayoutChannel {
   VIREMENT_BANCAIRE
 }
 
-enum DeliveryVerificationStatus {
-  CONFIRME
-  INVALIDE
+enum MediaType {
+  PHOTO
+  SPOT_PUB
 }
 
-enum MobileMoneyOperator {
-  ORANGE_MONEY
-  CORIS_MONEY
+enum WebhookEventResult {
+  APPLIED
+  IGNORED
+  REJECTED
 }
 
 // ------------------------------------------------------------------
-// 1. UTILISATEURS
+// 1. IDENTITE & ACCES
 // ------------------------------------------------------------------
 
 model User {
-  id           String    @id @default(uuid())
-  email        String    @unique
-  passwordHash String    @map("password_hash")
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
   role         UserRole
-  isActive     Boolean       @default(false) @map("is_active")
-  accountStatus AccountStatus @default(PENDING) @map("account_status")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   client        Client?
   merchant      Merchant?
+  bank          Bank?
   refreshTokens RefreshToken[]
   auditLogs     AuditLog[]
   notifications Notification[]
-  bankCredits   BankCredit[] @relation("BankCreditsHandledByBankUser")
 
   @@map("users")
 }
 
-// ------------------------------------------------------------------
-// 2. CLIENTS
-// ------------------------------------------------------------------
-
 model Client {
-  id                    String            @id @default(uuid())
-  userId                String            @unique @map("user_id")
-  firstName             String            @map("first_name")
-  lastName              String            @map("last_name")
-  phoneNumber           String            @map("phone_number")
-  cnibRectoUrl          String            @map("cnib_recto_url")
-  cnibVersoUrl          String            @map("cnib_verso_url")
-  city                  String
-  township              String
-  sector                String
-  employer              String?
-  registrationNumber    String?           @map("registration_number")
-  bankDossierStatus     BankDossierStatus @default(NON_SOUMIS) @map("bank_dossier_status")
-  bankAuthorizationUrl  String?           @map("bank_authorization_url")
-  paySlipsUrl           String?           @map("pay_slips_url")
-  createdAt             DateTime          @default(now()) @map("created_at")
-  updatedAt             DateTime          @updatedAt @map("updated_at")
+  id                 String       @id @default(uuid())
+  userId             String       @unique @map("user_id")
+  firstName          String       @map("first_name")
+  lastName           String       @map("last_name")
+  phoneNumber        String       @map("phone_number")
+  cnibRectoUrl       String       @map("cnib_recto_url")
+  cnibVersoUrl       String       @map("cnib_verso_url")
+  cityId             String?      @map("city_id")
+  communeId          String?      @map("commune_id")
+  status             ClientStatus @default(ACTIF)
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
 
-  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orders Order[]
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  city          City?          @relation(fields: [cityId], references: [id])
+  commune       Commune?       @relation(fields: [communeId], references: [id])
+  orders        Order[]
+  creditProfile CreditProfile?
+  creditRequests CreditRequest[]
 
   @@map("clients")
 }
 
-// ------------------------------------------------------------------
-// 3. COMMERCANTS
-// ------------------------------------------------------------------
-
 model Merchant {
-  id                   String   @id @default(uuid())
-  userId               String   @unique @map("user_id")
-  firstName            String   @map("first_name")
-  lastName             String   @map("last_name")
-  cnibRectoUrl         String   @map("cnib_recto_url")
-  cnibVersoUrl         String   @map("cnib_verso_url")
-  ifuRccmNumber        String   @map("ifu_rccm_number")
-  city                 String
-  orangeMoneyNumber    String?  @map("orange_money_number")
-  corisMoneyNumber     String?  @map("coris_money_number")
-  defaultPayoutAccount PayoutChannel @map("default_payout_account")
-  isVerified           Boolean  @default(false) @map("is_verified")
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
+  id                String         @id @default(uuid())
+  userId            String         @unique @map("user_id")
+  firstName         String         @map("first_name")
+  lastName          String         @map("last_name")
+  cnibRectoUrl      String         @map("cnib_recto_url")
+  cnibVersoUrl      String         @map("cnib_verso_url")
+  ifuRccmNumber     String         @map("ifu_rccm_number")
+  orangeMoneyNumber String?        @map("orange_money_number")
+  corisMoneyNumber  String?        @map("coris_money_number")
+  defaultPayoutChannel PayoutChannel @map("default_payout_channel")
+  status            MerchantStatus @default(EN_ATTENTE)
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
 
-  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  shop               Shop?
-  merchantPayouts    MerchantPayout[]
-  orderDeliveries    OrderDelivery[]
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store       Store?
+  withdrawals Withdrawal[]
+  settlements MerchantSettlement[]
 
   @@map("merchants")
 }
 
-// ------------------------------------------------------------------
-// 4. BOUTIQUES
-// ------------------------------------------------------------------
+model Bank {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
 
-model Shop {
-  id                  String   @id @default(uuid())
-  // Un commercant gere une seule boutique (POST/PUT /merchant/shop, sans :id) : contrainte
-  // ajoutee par rapport au schema SQL initial, qui n'avait pas d'UNIQUE sur merchant_id.
-  merchantId          String   @unique @map("merchant_id")
-  shopName            String   @map("shop_name")
-  city                String
-  township             String
-  neighborhood        String
-  addressDescription  String?  @map("address_description")
-  createdAt           DateTime @default(now()) @map("created_at")
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creditProfiles CreditProfile[]
+  creditRequests CreditRequest[]
 
-  merchant Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  products Product[]
-
-  @@map("shops")
+  @@map("banks")
 }
 
 // ------------------------------------------------------------------
-// 5. ARTICLES
+// 2. MARKETPLACE
 // ------------------------------------------------------------------
 
-model Product {
-  id             String   @id @default(uuid())
-  shopId         String   @map("shop_id")
-  title          String
-  description    String?
-  price          Decimal  @db.Decimal(12, 2)
-  initialStock   Int      @map("initial_stock")
-  remainingStock Int      @map("remaining_stock")
-  isVisible      Boolean  @default(true) @map("is_visible")
-  createdAt      DateTime @default(now()) @map("created_at")
+model City {
+  id   String @id @default(uuid())
+  name String @unique
 
-  shop   Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  communes Commune[]
+  stores   Store[]
+  clients  Client[]
+
+  @@map("cities")
+}
+
+model Commune {
+  id     String @id @default(uuid())
+  cityId String @map("city_id")
+  name   String
+
+  city    City     @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  stores  Store[]
+  clients Client[]
+
+  @@unique([cityId, name])
+  @@map("communes")
+}
+
+model Store {
+  id                 String   @id @default(uuid())
+  // Un commercant gere une seule boutique.
+  merchantId         String   @unique @map("merchant_id")
+  name               String
+  cityId             String   @map("city_id")
+  communeId          String   @map("commune_id")
+  addressDescription String?  @map("address_description")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  merchant Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  city     City      @relation(fields: [cityId], references: [id])
+  commune  Commune   @relation(fields: [communeId], references: [id])
+  products Product[]
+  orders   Order[]
+
+  @@index([cityId, communeId])
+  @@map("stores")
+}
+
+model Product {
+  id          String    @id @default(uuid())
+  storeId     String    @map("store_id")
+  title       String
+  description String?
+  // FCFA entier. Prix publie definitif : non modifiable apres creation (cahier, section 6).
+  price       Int
+  stock       Int
+  isPublished Boolean   @default(true) @map("is_published")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  store  Store          @relation(fields: [storeId], references: [id], onDelete: Cascade)
   media  ProductMedia[]
   orders Order[]
 
+  @@index([storeId])
   @@map("products")
 }
 
@@ -228,160 +295,246 @@ model ProductMedia {
 }
 
 // ------------------------------------------------------------------
-// 6. COMMANDES / DOSSIERS DE PAIEMENT
+// 3. COMMANDE CENTRALE
 // ------------------------------------------------------------------
 
 model Order {
-  id                 String      @id @default(uuid())
-  clientId           String      @map("client_id")
-  productId          String      @map("product_id")
-  paymentMode        PaymentMode @map("payment_mode")
-  totalAmount        Decimal     @map("total_amount") @db.Decimal(12, 2)
-  maxDurationMonths  Int         @map("max_duration_months")
-  extendedMonths     Int         @default(0) @map("extended_months")
-  status             OrderStatus @default(EN_COURS)
-  qrCodeToken        String?     @unique @map("qr_code_token")
-  createdAt          DateTime    @default(now()) @map("created_at")
-  updatedAt          DateTime    @updatedAt @map("updated_at")
+  id            String         @id @default(uuid())
+  // Identifiant lisible pour l'UI (ex. NP-2026-00001245), derive de orderSeq.
+  orderNumber   String         @unique @map("order_number")
+  orderSeq      Int            @unique @default(autoincrement()) @map("order_seq")
+  clientId      String         @map("client_id")
+  productId     String         @map("product_id")
+  storeId       String         @map("store_id")
+  amount        Int
+  financingMode FinancingMode? @map("financing_mode")
+  status        OrderStatus    @default(CREEE)
+  cancelledAt   DateTime?      @map("cancelled_at")
+  cancelReason  String?        @map("cancel_reason")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
 
-  client         Client          @relation(fields: [clientId], references: [id])
-  product        Product         @relation(fields: [productId], references: [id])
-  savingsPlan    SavingsPlan?
-  bankCredit     BankCredit?
-  merchantPayout MerchantPayout?
-  delivery       OrderDelivery?
+  client        Client              @relation(fields: [clientId], references: [id])
+  product       Product             @relation(fields: [productId], references: [id])
+  store         Store               @relation(fields: [storeId], references: [id])
+  savings       Savings?
+  vault         Vault?
+  creditRequest CreditRequest?
+  credit        Credit?
+  payments      Payment[]
+  qrTokens      QRToken[]
+  withdrawal    Withdrawal?
+  settlement    MerchantSettlement?
 
+  @@index([clientId])
+  @@index([storeId])
   @@map("orders")
 }
 
 // ------------------------------------------------------------------
-// 7. EPARGNES
+// 4. FINANCEMENTS
 // ------------------------------------------------------------------
 
-model SavingsPlan {
-  id                    String   @id @default(uuid())
-  orderId               String   @unique @map("order_id")
-  targetAmount          Decimal  @map("target_amount") @db.Decimal(12, 2)
-  currentSavedAmount    Decimal  @default(0.00) @map("current_saved_amount") @db.Decimal(12, 2)
-  minInstallmentAmount  Decimal  @map("min_installment_amount") @db.Decimal(12, 2)
-  dueDate               DateTime @map("due_date") @db.Date
-  isCompleted           Boolean  @default(false) @map("is_completed")
-  penaltyApplied        Boolean  @default(false) @map("penalty_applied")
-  createdAt             DateTime @default(now()) @map("created_at")
+model Savings {
+  id               String        @id @default(uuid())
+  orderId          String        @unique @map("order_id")
+  targetAmount     Int           @map("target_amount")
+  savedAmount      Int           @default(0) @map("saved_amount")
+  minInstallment   Int           @map("min_installment")
+  durationMonths   Int           @map("duration_months")
+  extensionMonths  Int           @default(0) @map("extension_months")
+  // Date de depart = premier versement effectivement recu et valide (cahier, section 6).
+  startedAt        DateTime?     @map("started_at")
+  dueDate          DateTime?     @map("due_date")
+  status           SavingsStatus @default(EN_COURS)
+  penaltyAmount    Int           @default(0) @map("penalty_amount")
+  refundAmount     Int           @default(0) @map("refund_amount")
+  createdAt        DateTime      @default(now()) @map("created_at")
 
-  order    Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  deposits SavingsDeposit[]
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  payments Payment[]
 
-  @@map("savings_plans")
+  @@map("savings")
 }
 
-model SavingsDeposit {
+model Vault {
+  id                       String      @id @default(uuid())
+  orderId                  String      @unique @map("order_id")
+  targetAmount             Int         @map("target_amount")
+  collectedAmount          Int         @default(0) @map("collected_amount")
+  monthlyAmount            Int         @map("monthly_amount")
+  durationMonths           Int         @map("duration_months")
+  salaryDebitAuthorizationUrl String?  @map("salary_debit_authorization_url")
+  status                   VaultStatus @default(PROGRAMME)
+  createdAt                DateTime    @default(now()) @map("created_at")
+
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@map("vaults")
+}
+
+model CreditProfile {
+  id                   String              @id @default(uuid())
+  clientId             String              @unique @map("client_id")
+  bankId               String?             @map("bank_id")
+  employer             String?
+  registrationNumber   String?             @map("registration_number")
+  bankAuthorizationUrl String?             @map("bank_authorization_url")
+  paySlipsUrl          String?             @map("pay_slips_url")
+  status               CreditProfileStatus @default(NON_CONFIGURE)
+  decisionReason       String?             @map("decision_reason")
+  decidedAt            DateTime?           @map("decided_at")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  bank   Bank?  @relation(fields: [bankId], references: [id])
+
+  @@map("credit_profiles")
+}
+
+model CreditRequest {
+  id                 String              @id @default(uuid())
+  orderId            String              @unique @map("order_id")
+  clientId           String              @map("client_id")
+  bankId             String              @map("bank_id")
+  amount             Int
+  durationMonths     Int                 @map("duration_months")
+  monthlyInstallment Int                 @map("monthly_installment")
+  bankFeeAmount      Int                 @map("bank_fee_amount")
+  totalAmountToWire  Int                 @map("total_amount_to_wire")
+  status             CreditRequestStatus @default(ENVOYEE)
+  decisionReason     String?             @map("decision_reason")
+  decidedAt          DateTime?           @map("decided_at")
+  createdAt          DateTime            @default(now()) @map("created_at")
+
+  order  Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  client Client  @relation(fields: [clientId], references: [id])
+  bank   Bank    @relation(fields: [bankId], references: [id])
+  credit Credit?
+
+  @@map("credit_requests")
+}
+
+model Credit {
+  id                 String       @id @default(uuid())
+  creditRequestId    String       @unique @map("credit_request_id")
+  orderId            String       @unique @map("order_id")
+  amount             Int
+  durationMonths     Int          @map("duration_months")
+  monthlyInstallment Int          @map("monthly_installment")
+  totalAmountToWire  Int          @map("total_amount_to_wire")
+  status             CreditStatus @default(ACCEPTE)
+  transferReference  String?      @map("transfer_reference")
+  transferNotedAt    DateTime?    @map("transfer_noted_at")
+  createdAt          DateTime     @default(now()) @map("created_at")
+
+  creditRequest CreditRequest @relation(fields: [creditRequestId], references: [id], onDelete: Cascade)
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("credits")
+}
+
+// ------------------------------------------------------------------
+// 5. PAIEMENTS & WEBHOOKS
+// ------------------------------------------------------------------
+
+model Payment {
   id                    String        @id @default(uuid())
-  savingsPlanId         String        @map("savings_plan_id")
-  amount                Decimal       @db.Decimal(12, 2)
-  transactionReference  String        @unique @map("transaction_reference")
-  operator              MobileMoneyOperator
-  status                DepositStatus @default(SUCCESS)
-  depositDate           DateTime      @default(now()) @map("deposit_date")
+  orderId               String        @map("order_id")
+  savingsId             String?       @map("savings_id")
+  vaultId               String?       @map("vault_id")
+  kind                  PaymentKind
+  amount                Int
+  currency              String        @default("XOF")
+  provider              String?
+  // Contrainte UNIQUE : une meme transaction n'est jamais comptabilisee deux fois.
+  providerTransactionId String?       @unique @map("provider_transaction_id")
+  payerReference        String?       @map("payer_reference")
+  status                PaymentStatus @default(INITIE)
+  createdAt             DateTime      @default(now()) @map("created_at")
+  confirmedAt           DateTime?     @map("confirmed_at")
 
-  savingsPlan SavingsPlan @relation(fields: [savingsPlanId], references: [id], onDelete: Cascade)
+  order   Order    @relation(fields: [orderId], references: [id])
+  savings Savings? @relation(fields: [savingsId], references: [id])
+  vault   Vault?   @relation(fields: [vaultId], references: [id])
 
-  @@map("savings_deposits")
+  @@index([orderId])
+  @@map("payments")
+}
+
+model PaymentEvent {
+  id                    String             @id @default(uuid())
+  providerTransactionId String             @unique @map("provider_transaction_id")
+  orderId               String?            @map("order_id")
+  amount                Int
+  currency              String
+  status                String
+  payload               Json
+  result                WebhookEventResult
+  reason                String?
+  receivedAt            DateTime           @default(now()) @map("received_at")
+
+  @@map("payment_events")
 }
 
 // ------------------------------------------------------------------
-// 8. CREDITS BANCAIRES
+// 6. QR, RETRAIT, REGLEMENT COMMERCANT
 // ------------------------------------------------------------------
 
-model BankCredit {
-  id                     String         @id @default(uuid())
-  orderId                String         @unique @map("order_id")
-  bankId                 String         @map("bank_id")
-  monthlyInstallment     Decimal        @map("monthly_installment") @db.Decimal(12, 2)
-  bankCommissionAmount   Decimal        @map("bank_commission_amount") @db.Decimal(12, 2)
-  totalAmountToWire      Decimal        @map("total_amount_to_wire") @db.Decimal(12, 2)
-  approvalStatus         ApprovalStatus @default(EN_ATTENTE) @map("approval_status")
-  transferStatus         TransferStatus @default(NON_EFFECTUE) @map("transfer_status")
-  approvalDate           DateTime?      @map("approval_date")
-  createdAt              DateTime       @default(now()) @map("created_at")
+model QRToken {
+  id        String   @id @default(uuid())
+  orderId   String   @map("order_id")
+  // Jeton opaque genere cote serveur ; aucune donnee metier n'est encodee dedans.
+  token     String   @unique
+  status    QrStatus @default(GENERE)
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  bank  User  @relation("BankCreditsHandledByBankUser", fields: [bankId], references: [id])
 
-  @@map("bank_credits")
+  @@index([orderId])
+  @@map("qr_tokens")
 }
 
-// ------------------------------------------------------------------
-// 9. TRANSACTIONS & REVERSEMENTS COMMERCANTS
-// ------------------------------------------------------------------
-
-model MerchantPayout {
-  id                     String        @id @default(uuid())
-  orderId                String        @unique @map("order_id")
-  merchantId             String        @map("merchant_id")
-  grossAmount            Decimal       @map("gross_amount") @db.Decimal(12, 2)
-  nanapayCommissionRate  Decimal       @map("nanapay_commission_rate") @db.Decimal(5, 2)
-  commissionAmount       Decimal       @map("commission_amount") @db.Decimal(12, 2)
-  netAmountPaid          Decimal       @map("net_amount_paid") @db.Decimal(12, 2)
-  payoutChannel          PayoutChannel @map("payout_channel")
-  payoutReference        String?       @map("payout_reference")
-  payoutDate             DateTime      @default(now()) @map("payout_date")
+model Withdrawal {
+  id          String   @id @default(uuid())
+  orderId     String   @unique @map("order_id")
+  merchantId  String   @map("merchant_id")
+  qrTokenId   String   @map("qr_token_id")
+  confirmedAt DateTime @default(now()) @map("confirmed_at")
 
   order    Order    @relation(fields: [orderId], references: [id])
   merchant Merchant @relation(fields: [merchantId], references: [id])
 
-  @@map("merchant_payouts")
+  @@map("withdrawals")
+}
+
+model MerchantSettlement {
+  id             String           @id @default(uuid())
+  orderId        String           @unique @map("order_id")
+  merchantId     String           @map("merchant_id")
+  grossAmount    Int              @map("gross_amount")
+  commissionRate Decimal          @map("commission_rate") @db.Decimal(6, 4)
+  commissionAmount Int            @map("commission_amount")
+  netAmount      Int              @map("net_amount")
+  channel        PayoutChannel
+  payoutReference String?         @map("payout_reference")
+  status         SettlementStatus @default(EN_ATTENTE)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  paidAt         DateTime?        @map("paid_at")
+
+  order    Order    @relation(fields: [orderId], references: [id])
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  @@map("merchant_settlements")
 }
 
 // ------------------------------------------------------------------
-// 10. RETRAITS EN BOUTIQUE (Scan QR)
+// 7. TRANSVERSE : notifications, audit, parametres, technique
 // ------------------------------------------------------------------
-
-model OrderDelivery {
-  id                   String                     @id @default(uuid())
-  orderId              String                     @unique @map("order_id")
-  scannedByMerchantId  String                     @map("scanned_by_merchant_id")
-  deliveryDate         DateTime                   @default(now()) @map("delivery_date")
-  verificationStatus   DeliveryVerificationStatus @default(CONFIRME) @map("verification_status")
-
-  order            Order    @relation(fields: [orderId], references: [id])
-  scannedByMerchant Merchant @relation(fields: [scannedByMerchantId], references: [id])
-
-  @@map("order_deliveries")
-}
-
-// ------------------------------------------------------------------
-// TABLES TECHNIQUES (ajoutees - audit, notifications, sessions, idempotence)
-// ------------------------------------------------------------------
-
-model RefreshToken {
-  id        String   @id @default(uuid())
-  userId    String   @map("user_id")
-  tokenHash String   @unique @map("token_hash")
-  expiresAt DateTime @map("expires_at")
-  revokedAt DateTime? @map("revoked_at")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("refresh_tokens")
-}
-
-model AuditLog {
-  id         String   @id @default(uuid())
-  userId     String?  @map("user_id")
-  action     String
-  entityType String   @map("entity_type")
-  entityId   String?  @map("entity_id")
-  metadata   Json?
-  ipAddress  String?  @map("ip_address")
-  createdAt  DateTime @default(now()) @map("created_at")
-
-  user User? @relation(fields: [userId], references: [id])
-
-  @@index([entityType, entityId])
-  @@map("audit_logs")
-}
 
 model Notification {
   id        String   @id @default(uuid())
@@ -394,7 +547,52 @@ model Notification {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, createdAt])
   @@map("notifications")
+}
+
+// Trace : date/heure (createdAt), identifiant, acteur, montant et statut (cahier, section 7).
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  actorRole  String?  @map("actor_role")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  amount     Int?
+  status     String?
+  metadata   Json?
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// Parametres financiers modifiables depuis le back-office (formules 4 %, 20 %, 15 %...).
+model Setting {
+  key       String   @id
+  value     Json
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
 }
 
 model IdempotencyKey {

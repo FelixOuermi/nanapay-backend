@@ -1,40 +1,46 @@
 import { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { MulterError } from "multer";
+import { Prisma } from "@prisma/client";
 import { AppError } from "@common/errors/AppError";
 import { logger } from "@config/logger";
 
+// Contrat d'erreur : { code, message, details?, requestId } (cahier, section 8).
+function sendError(req: Request, res: Response, status: number, code: string, message: string, details?: unknown) {
+  res.status(status).json({ code, message, details, requestId: req.requestId });
+}
+
 export function notFoundHandler(req: Request, res: Response) {
-  res.status(404).json({
-    error: { code: "NOT_FOUND", message: `Route introuvable: ${req.method} ${req.originalUrl}` },
-  });
+  sendError(req, res, 404, "NOT_FOUND", `Route introuvable: ${req.method} ${req.originalUrl}`);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
   if (err instanceof AppError) {
-    res.status(err.statusCode).json({
-      error: { code: err.code, message: err.message, details: err.details },
-    });
+    sendError(req, res, err.statusCode, err.code, err.message, err.details);
     return;
   }
 
   if (err instanceof MulterError) {
-    res.status(400).json({ error: { code: "UPLOAD_ERROR", message: err.message } });
+    sendError(req, res, 400, "UPLOAD_ERROR", err.message);
     return;
   }
 
   if (err instanceof ZodError) {
-    res.status(422).json({
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "Donnees invalides",
-        details: err.flatten(),
-      },
-    });
+    sendError(req, res, 422, "VALIDATION_ERROR", "Donnees invalides", err.flatten());
     return;
   }
 
-  logger.error("Erreur non geree", { error: err });
-  res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Erreur interne du serveur" } });
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+    sendError(req, res, 409, "CONFLICT", "Cette ressource existe deja");
+    return;
+  }
+
+  if (err instanceof SyntaxError && "body" in err) {
+    sendError(req, res, 400, "BAD_REQUEST", "Corps JSON invalide");
+    return;
+  }
+
+  logger.error("Erreur non geree", { error: err, requestId: req.requestId });
+  sendError(req, res, 500, "INTERNAL_ERROR", "Erreur interne du serveur");
 }

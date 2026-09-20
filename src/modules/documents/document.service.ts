@@ -15,18 +15,20 @@ interface Requester {
  * droit de le consulter. Ces documents ne sont jamais servis statiquement (contrairement
  * aux medias produits) : cet endpoint est le seul point d'acces, avec controle d'acces.
  *
- * Droits : le proprietaire peut toujours voir ses propres documents ; l'Admin peut tout
- * voir (KYC) ; une Banque ne peut voir les documents d'un Client que si elle a ete
- * assignee a au moins un dossier de credit de ce client (peu importe son statut).
+ * Droits : le proprietaire voit ses propres documents ; l'Admin voit tout ; une Banque
+ * ne voit que les documents bancaires (et la CNIB) des clients dont le profil credit ou
+ * une demande de credit lui est assigne.
  */
 export async function resolvePrivateDocumentPath(filename: string, requester: Requester): Promise<string> {
+  const isAdmin = requester.role === "ADMIN";
+  const privatePath = path.join(env.UPLOAD_DIR, "private", path.basename(filename));
+
   const client = await prisma.client.findFirst({
     where: {
       OR: [
         { cnibRectoUrl: filename },
         { cnibVersoUrl: filename },
-        { bankAuthorizationUrl: filename },
-        { paySlipsUrl: filename },
+        { creditProfile: { OR: [{ bankAuthorizationUrl: filename }, { paySlipsUrl: filename }] } },
       ],
     },
     select: { id: true, userId: true },
@@ -34,35 +36,43 @@ export async function resolvePrivateDocumentPath(filename: string, requester: Re
 
   if (client) {
     const isOwner = client.userId === requester.id;
-    const isAdmin = requester.role === "ADMIN";
-    const isAssignedBank =
-      requester.role === "BANQUE" &&
-      (await prisma.bankCredit.findFirst({
-        where: { bankId: requester.id, order: { clientId: client.id } },
-        select: { id: true },
-      })) !== null;
+    let isAssignedBank = false;
+
+    if (requester.role === "BANK") {
+      const bank = await prisma.bank.findUnique({ where: { userId: requester.id }, select: { id: true } });
+      if (bank) {
+        isAssignedBank =
+          (await prisma.creditProfile.findFirst({ where: { clientId: client.id, bankId: bank.id }, select: { id: true } })) !== null ||
+          (await prisma.creditRequest.findFirst({ where: { clientId: client.id, bankId: bank.id }, select: { id: true } })) !== null;
+      }
+    }
 
     if (!isOwner && !isAdmin && !isAssignedBank) {
       throw AppError.forbidden("Vous n'etes pas autorise a consulter ce document");
     }
+    return privatePath;
+  }
 
-    return path.join(env.UPLOAD_DIR, "private", filename);
+  const vault = await prisma.vault.findFirst({
+    where: { salaryDebitAuthorizationUrl: filename },
+    select: { order: { select: { client: { select: { userId: true } } } } },
+  });
+  if (vault) {
+    if (vault.order.client.userId !== requester.id && !isAdmin) {
+      throw AppError.forbidden("Vous n'etes pas autorise a consulter ce document");
+    }
+    return privatePath;
   }
 
   const merchant = await prisma.merchant.findFirst({
     where: { OR: [{ cnibRectoUrl: filename }, { cnibVersoUrl: filename }] },
     select: { userId: true },
   });
-
   if (merchant) {
-    const isOwner = merchant.userId === requester.id;
-    const isAdmin = requester.role === "ADMIN";
-
-    if (!isOwner && !isAdmin) {
+    if (merchant.userId !== requester.id && !isAdmin) {
       throw AppError.forbidden("Vous n'etes pas autorise a consulter ce document");
     }
-
-    return path.join(env.UPLOAD_DIR, "private", filename);
+    return privatePath;
   }
 
   throw AppError.notFound("Document introuvable");

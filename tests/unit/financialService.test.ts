@@ -1,69 +1,132 @@
 import {
-  getSavingsTerms,
-  computeSavingsPenalty,
-  getSavingsCommissionRate,
+  canExtendSavings,
+  computeCreditSettlement,
+  computeCreditTerms,
   computeMaxCreditDurationMonths,
-  computeBankWireAmount,
-  computeCreditMerchantPayout,
-  assertValidCreditDuration,
+  computeSavingsPenalty,
+  computeSavingsSettlement,
+  computeVaultTerms,
+  getSavingsTerms,
+  validateSavingsDeposit,
 } from "@services/financial/financialService";
+import { DEFAULT_FINANCIAL_PARAMS } from "@services/financial/financial.constants";
 
-describe("financialService - Epargne", () => {
-  it("applique le palier 0-50 000 FCFA", () => {
-    expect(getSavingsTerms(30_000)).toEqual({ minInstallmentAmount: 1_000, maxDurationMonths: 8 });
+describe("financialService - epargne (cahier, section 6)", () => {
+  it.each([
+    [30_000, 1_000, 8],
+    [50_000, 1_000, 8],
+    [50_001, 2_000, 18],
+    [100_000, 2_000, 18],
+    [100_001, 5_000, 36],
+    [900_000, 5_000, 36],
+  ])("prix %i FCFA -> minimum %i FCFA, %i mois max", (price, minInstallment, maxDurationMonths) => {
+    expect(getSavingsTerms(price)).toEqual({ minInstallment, maxDurationMonths });
   });
 
-  it("applique le palier 50 000-100 000 FCFA", () => {
-    expect(getSavingsTerms(75_000)).toEqual({ minInstallmentAmount: 2_000, maxDurationMonths: 18 });
+  it("refuse un prix nul ou negatif", () => {
+    expect(() => getSavingsTerms(0)).toThrow();
+    expect(() => getSavingsTerms(-5)).toThrow();
   });
 
-  it("applique le palier > 100 000 FCFA", () => {
-    expect(getSavingsTerms(150_000)).toEqual({ minInstallmentAmount: 5_000, maxDurationMonths: 36 });
+  it("prolongation : 2 mois maximum au total", () => {
+    expect(canExtendSavings(0, 2)).toBe(true);
+    expect(canExtendSavings(1, 1)).toBe(true);
+    expect(canExtendSavings(1, 2)).toBe(false);
+    expect(canExtendSavings(2, 1)).toBe(false);
+    expect(canExtendSavings(0, 0)).toBe(false);
   });
 
-  it("applique la penalite actuelle de 15% et un remboursement de 85% en cas de depassement de delai", () => {
-    const result = computeSavingsPenalty(100_000);
-    expect(result.penaltyAmount).toBe(15_000);
-    expect(result.refundAmount).toBe(85_000);
-    expect(result.penaltyAmount + result.refundAmount).toBe(100_000);
+  it("echec : penalite 15 %, remboursement 85 %, somme exacte", () => {
+    expect(computeSavingsPenalty(40_000)).toEqual({ penaltyAmount: 6_000, refundAmount: 34_000 });
+    const odd = computeSavingsPenalty(33_333);
+    expect(odd.penaltyAmount + odd.refundAmount).toBe(33_333);
+    expect(Number.isInteger(odd.penaltyAmount)).toBe(true);
   });
 
-  it("applique un taux de commission degressif selon le prix de l'article", () => {
-    expect(getSavingsCommissionRate(40_000)).toBe(0.08);
-    expect(getSavingsCommissionRate(75_000)).toBe(0.05);
-    expect(getSavingsCommissionRate(120_000)).toBe(0.03);
+  describe("validateSavingsDeposit", () => {
+    it("accepte un versement >= minimum", () => {
+      expect(validateSavingsDeposit(2_000, 10_000, 1_000)).toEqual({ valid: true });
+    });
+
+    it("refuse un versement sous le minimum", () => {
+      expect(validateSavingsDeposit(500, 10_000, 1_000)).toMatchObject({ valid: false });
+    });
+
+    it("accepte un dernier versement inferieur au minimum s'il solde exactement le reste", () => {
+      expect(validateSavingsDeposit(300, 300, 1_000)).toEqual({ valid: true });
+    });
+
+    it("refuse un versement superieur au reste a epargner", () => {
+      expect(validateSavingsDeposit(5_000, 4_000, 1_000)).toMatchObject({ valid: false });
+    });
+
+    it("refuse un montant non entier ou nul", () => {
+      expect(validateSavingsDeposit(1_000.5, 10_000, 1_000)).toMatchObject({ valid: false });
+      expect(validateSavingsDeposit(0, 10_000, 1_000)).toMatchObject({ valid: false });
+    });
   });
 });
 
-describe("financialService - Credit Bancaire", () => {
-  it("limite a 8 mois pour un article <= 50 000 FCFA", () => {
-    expect(computeMaxCreditDurationMonths(50_000)).toBe(8);
+describe("financialService - credit (cahier, section 6)", () => {
+  it.each([
+    [40_000, 8],
+    [50_000, 8],
+    [50_001, 12],
+    [100_000, 12],
+    [100_001, 18], // +1 tranche de 50 000 entamee -> +6 mois
+    [150_000, 18],
+    [150_001, 24],
+    [250_000, 30],
+    [300_000, 36],
+  ])("prix %i FCFA -> %i mois max", (price, months) => {
+    expect(computeMaxCreditDurationMonths(price)).toBe(months);
   });
 
-  it("limite a 12 mois pour un article entre 50 000 et 100 000 FCFA", () => {
-    expect(computeMaxCreditDurationMonths(100_000)).toBe(12);
+  it("calcule frais, montant a virer et mensualite en entiers FCFA", () => {
+    const terms = computeCreditTerms(80_000, 10);
+    expect(terms.bankFeeAmount).toBe(1_600); // 2 %
+    expect(terms.totalAmountToWire).toBe(81_600);
+    expect(terms.monthlyInstallment).toBe(8_160);
+    expect(Object.values(terms).every(Number.isInteger)).toBe(true);
   });
 
-  it("ajoute 6 mois par tranche entamee de 50 000 FCFA au-dela de 100 000", () => {
-    expect(computeMaxCreditDurationMonths(120_000)).toBe(18); // tranche entamee -> arrondi superieur
-    expect(computeMaxCreditDurationMonths(150_000)).toBe(18);
-    expect(computeMaxCreditDurationMonths(150_001)).toBe(24);
+  it("arrondit la mensualite au FCFA superieur", () => {
+    expect(computeCreditTerms(40_000, 7).monthlyInstallment).toBe(Math.ceil(40_800 / 7));
   });
 
-  it("refuse une duree hors limite", () => {
-    expect(() => assertValidCreditDuration(50_000, 9)).toThrow();
-    expect(() => assertValidCreditDuration(50_000, 8)).not.toThrow();
+  it("refuse une duree hors bareme ou non entiere", () => {
+    expect(() => computeCreditTerms(40_000, 9)).toThrow(/maximum autorise 8/);
+    expect(() => computeCreditTerms(40_000, 0)).toThrow();
+    expect(() => computeCreditTerms(40_000, 2.5)).toThrow();
   });
 
-  it("calcule le virement banque -> NanaPay avec l'exemple du document (50 000 FCFA)", () => {
-    const wire = computeBankWireAmount(50_000);
-    expect(wire.bankCommissionAmount).toBe(1_000);
-    expect(wire.totalAmountToWire).toBe(51_000);
+  it("reglement commercant credit : commission 4 % sur le prix", () => {
+    expect(computeCreditSettlement(100_000)).toEqual({ commissionRate: 0.04, commissionAmount: 4_000, netAmount: 96_000 });
+  });
+});
+
+describe("financialService - reglement epargne/coffre et coffre", () => {
+  it.each([
+    [40_000, 0.08, 3_200],
+    [60_000, 0.05, 3_000],
+    [200_000, 0.03, 6_000],
+  ])("prix %i -> taux %d, commission %i", (price, rate, commission) => {
+    const settlement = computeSavingsSettlement(price);
+    expect(settlement.commissionRate).toBe(rate);
+    expect(settlement.commissionAmount).toBe(commission);
+    expect(settlement.netAmount).toBe(price - commission);
   });
 
-  it("calcule le reversement commercant avec l'exemple du document (50 000 FCFA)", () => {
-    const payout = computeCreditMerchantPayout(50_000);
-    expect(payout.commissionAmount).toBe(2_000);
-    expect(payout.netAmountPaid).toBe(48_000);
+  it("coffre : mensualite arrondie au superieur, duree alignee sur le bareme credit", () => {
+    expect(computeVaultTerms(50_000, 7)).toEqual({ monthlyAmount: 7_143, maxDurationMonths: 8 });
+    expect(() => computeVaultTerms(50_000, 12)).toThrow();
+  });
+});
+
+describe("financialService - parametres configurables (back-office)", () => {
+  it("applique les parametres fournis a la place des valeurs par defaut", () => {
+    const params = { ...DEFAULT_FINANCIAL_PARAMS, savingsPenaltyRate: 0.2, creditMerchantCommissionRate: 0.1 };
+    expect(computeSavingsPenalty(10_000, params)).toEqual({ penaltyAmount: 2_000, refundAmount: 8_000 });
+    expect(computeCreditSettlement(10_000, params).commissionAmount).toBe(1_000);
   });
 });

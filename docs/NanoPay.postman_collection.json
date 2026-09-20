@@ -1,0 +1,2540 @@
+{
+  "info": {
+    "name": "NanoPay API",
+    "description": "Collection generee depuis docs/openapi.yaml (npm run docs:postman).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000/api"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /auth/register — Inscription Client ou Commerçant",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Public. `multipart/form-data` avec les photos `cnibRecto` et `cnibVerso` (stockées de façon privée).\n`role=CLIENT` : compte `ACTIF` immédiatement. `role=MERCHANT` : `EN_ATTENTE` jusqu'à validation Admin.\nLes rôles BANK et ADMIN ne s'inscrivent pas (provisionnés hors API, voir `npm run seed:demo`).\nLes chemins `/auth/register/client` et `/auth/register/merchant` sont des alias.\n",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "role",
+                  "type": "text",
+                  "value": "CLIENT"
+                },
+                {
+                  "key": "email",
+                  "type": "text",
+                  "value": "client@nanopay.test"
+                },
+                {
+                  "key": "password",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "firstName",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "lastName",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "phoneNumber",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "cityId",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "communeId",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "ifuRccmNumber",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "orangeMoneyNumber",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "corisMoneyNumber",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "defaultPayoutChannel",
+                  "type": "text",
+                  "value": "ORANGE_MONEY"
+                },
+                {
+                  "key": "cnibRecto",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "cnibVerso",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /auth/login — Connexion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Connexion",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"client@nanopay.test\",\n  \"password\": \"string\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.accessToken) {",
+                  "  pm.collectionVariables.set('accessToken', res.data.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', res.data.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /auth/refresh — Renouvelle les jetons (rotation du refresh token)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Renouvelle les jetons (rotation du refresh token)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST /auth/logout — Révoque le refresh token (idempotent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Révoque le refresh token (idempotent)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST /auth/recovery — Récupération de compte (mot de passe temporaire par e-mail)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/recovery",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "recovery"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Récupération de compte (mot de passe temporaire par e-mail)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"client@nanopay.test\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /me — Profil de l'utilisateur connecté (tous rôles)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Profil de l'utilisateur connecté (tous rôles)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /me — Met à jour son profil / change son mot de passe",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Met à jour son profil / change son mot de passe",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"string\",\n  \"lastName\": \"string\",\n  \"phoneNumber\": \"string\",\n  \"cityId\": \"string\",\n  \"communeId\": \"string\",\n  \"orangeMoneyNumber\": \"string\",\n  \"corisMoneyNumber\": \"string\",\n  \"defaultPayoutChannel\": \"ORANGE_MONEY\",\n  \"currentPassword\": \"string\",\n  \"newPassword\": \"string\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Marketplace",
+      "item": [
+        {
+          "name": "GET /marketplace/cities — Liste des villes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/marketplace/cities",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "marketplace",
+                "cities"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Liste des villes",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "GET /marketplace/communes — Communes d'une ville",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/marketplace/communes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "marketplace",
+                "communes"
+              ],
+              "query": [
+                {
+                  "key": "cityId",
+                  "value": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "Communes d'une ville",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "GET /stores — Boutiques (commerçants validés uniquement)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/stores",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "stores"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Boutiques (commerçants validés uniquement)",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "GET /stores/{storeId} — Détail d'une boutique et de ses produits publiés en stock",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/stores/:storeId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "stores",
+                ":storeId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "storeId",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Détail d'une boutique et de ses produits publiés en stock",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "GET /products/{productId} — Détail d'un produit (prix FCFA entier, définitif une fois publié)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/:productId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                ":productId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "productId",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Détail d'un produit (prix FCFA entier, définitif une fois publié)",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "item": [
+        {
+          "name": "POST /orders — Crée la commande d'un produit (CLIENT)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Réserve une unité de stock. Le prix vient toujours de la base. Statut initial `CREEE`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /orders — Mes commandes (CLIENT)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Mes commandes (CLIENT)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /orders/{id} — Détail d'une commande (propriétaire uniquement, sinon 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Détail d'une commande (propriétaire uniquement, sinon 404)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /orders/{id}/select-financing — Choisit le mode de financement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/:id/select-financing",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                ":id",
+                "select-financing"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "`VAULT` et `CREDIT` exigent un profil crédit bancaire déjà `VALIDE` (Coffre : salarié uniquement).\nLa commande passe à `FINANCEMENT_EN_COURS`.\n",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"SAVINGS\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /orders/{id}/qr — Jeton QR serveur de la commande prête à livrer",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/:id/qr",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                ":id",
+                "qr"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "`data` = `{ qrToken, expiresAt }`. Le QR ne contient que ce jeton opaque. Un jeton expiré est\nrégénéré (l'ancien est invalidé). 403 tant que le financement n'est pas validé.\n",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Savings",
+      "item": [
+        {
+          "name": "POST /orders/{id}/savings — Ouvre le plan d'épargne de la commande",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/:id/savings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                ":id",
+                "savings"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Versement minimum / durée max selon le prix : ≤50 000 → 1 000 FCFA, 8 mois ; 50 000–100 000 → 2 000, 18 mois ;\n>100 000 → 5 000, 36 mois (paramétrable). La date de départ est celle du **premier versement validé**.\n`paymentReference` = `orderId` à fournir lors du versement Mobile Money.\n",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"durationMonths\": 1\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /savings/{id} — Détail (progression, reste, jours restants)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/savings/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "savings",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Détail (progression, reste, jours restants)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /savings/{id}/history — Historique des paiements de l'épargne",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/savings/:id/history",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "savings",
+                ":id",
+                "history"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Historique des paiements de l'épargne",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /savings/{id}/extension — Prolonge l'échéance (2 mois maximum au total, avant l'échéance)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/savings/:id/extension",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "savings",
+                ":id",
+                "extension"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Prolonge l'échéance (2 mois maximum au total, avant l'échéance)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"months\": 1\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Vault",
+      "item": [
+        {
+          "name": "POST /orders/{id}/vault — Programme le Coffre (prélèvement automatique sur salaire)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/:id/vault",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                ":id",
+                "vault"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Réservé aux salariés dont le profil crédit est déjà validé. `multipart` : `durationMonths` + `salaryDebitAuthorization` (optionnel).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "durationMonths",
+                  "type": "text",
+                  "value": "1"
+                },
+                {
+                  "key": "salaryDebitAuthorization",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /vaults/{id} — Détail du Coffre",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/vaults/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "vaults",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Détail du Coffre",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /vaults/{id}/use — Utilise un Coffre complet (`OBJECTIF_ATTEINT`) → commande prête + QR",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/vaults/:id/use",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "vaults",
+                ":id",
+                "use"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Utilise un Coffre complet (`OBJECTIF_ATTEINT`) → commande prête + QR",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /vaults/{id}/switch-to-credit — Bascule vers un crédit pour le reste à financer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/vaults/:id/switch-to-credit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "vaults",
+                ":id",
+                "switch-to-credit"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Bascule vers un crédit pour le reste à financer",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"durationMonths\": 1\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Credit",
+      "item": [
+        {
+          "name": "GET /credit/profile — Mon profil crédit (`NON_CONFIGURE` s'il n'existe pas)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/credit/profile",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "credit",
+                "profile"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Mon profil crédit (`NON_CONFIGURE` s'il n'existe pas)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /credit/profile — Soumet le profil crédit à la banque",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/credit/profile",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "credit",
+                "profile"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "`multipart` : `employer`, `registrationNumber?`, `bankAuthorization` (fichier), `paySlips` (fichier). Statut → `EN_ANALYSE`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "employer",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "registrationNumber",
+                  "type": "text",
+                  "value": "string"
+                },
+                {
+                  "key": "bankAuthorization",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "paySlips",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /credit/requests — Crée la demande de crédit d'une commande",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/credit/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "credit",
+                "requests"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Profil `VALIDE` requis. Durée validée par le backend (≤50 000 : 8 mois ; 50 000–100 000 : 12 ; au-delà +6 mois par tranche de 50 000). Montant à virer = prix + frais.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"string\",\n  \"durationMonths\": 1\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /credit/requests/{id} — Détail d'une demande de crédit",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/credit/requests/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "credit",
+                "requests",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Détail d'une demande de crédit",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /credits/{id} — Détail d'un crédit",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/credits/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "credits",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Détail d'un crédit",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Merchant",
+      "item": [
+        {
+          "name": "GET /merchant/store — Ma boutique",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/store",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "store"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Ma boutique",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /merchant/store — Crée ma boutique (compte VALIDE requis)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/store",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "store"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Crée ma boutique (compte VALIDE requis)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"string\",\n  \"cityId\": \"string\",\n  \"communeId\": \"string\",\n  \"addressDescription\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "PUT /merchant/store — Met à jour ma boutique",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/store",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "store"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Met à jour ma boutique",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"string\",\n  \"cityId\": \"string\",\n  \"communeId\": \"string\",\n  \"addressDescription\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST /merchant/products — Publie un produit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "products"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "`price` : FCFA entier, **définitif** après publication.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"string\",\n  \"description\": \"string\",\n  \"price\": 1,\n  \"stock\": 0,\n  \"isPublished\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "PATCH /merchant/products/{id} — Modifie titre, description, stock ou publication",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/products/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "products",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Toute tentative de modifier `price` est refusée (422).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"string\",\n  \"description\": \"string\",\n  \"stock\": 0,\n  \"isPublished\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "DELETE /merchant/products/{id} — Supprime un produit (suppression logique)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/products/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "products",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Refusée (409) tant qu'une commande non terminée le référence.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /merchant/products/{id}/media — Ajoute photos (`photos`, 10 max) et spots publicitaires (`spots`, 5 max)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/products/:id/media",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "products",
+                ":id",
+                "media"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Ajoute photos (`photos`, 10 max) et spots publicitaires (`spots`, 5 max)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "photos",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "spots",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /merchant/orders — Commandes de ma boutique",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "orders"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Commandes de ma boutique",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /merchant/settlements — Mes règlements",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/settlements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "settlements"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Mes règlements",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /merchant/qr/scan — Valide un QR côté serveur (aucun changement d'état)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/qr/scan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "qr",
+                "scan"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "404 jeton inconnu ou d'une autre boutique (indistinguables) ; 409 déjà utilisé ou commande non prête ;\n410 `QR_EXPIRED`.\n",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"qrToken\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST /merchant/orders/{id}/withdrawal-confirm — Confirme le retrait en boutique",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/merchant/orders/:id/withdrawal-confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "merchant",
+                "orders",
+                ":id",
+                "withdrawal-confirm"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Consomme le jeton (atomique), commande → `LIVREE`, règlement commerçant créé (`EN_ATTENTE`) — paiement commerçant déclenché après retrait confirmé.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"qrToken\": \"string\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bank",
+      "item": [
+        {
+          "name": "GET /bank/credit-profiles — Profils crédit assignés (par défaut `EN_ANALYSE`)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/bank/credit-profiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bank",
+                "credit-profiles"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Profils crédit assignés (par défaut `EN_ANALYSE`)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /bank/credit-profiles/{id}/decision — Valide ou refuse un profil",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bank/credit-profiles/:id/decision",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bank",
+                "credit-profiles",
+                ":id",
+                "decision"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Valide ou refuse un profil",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"VALIDE\",\n  \"reason\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /bank/credit-requests — Demandes de crédit assignées (par défaut `ENVOYEE` + `EN_ANALYSE`)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/bank/credit-requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bank",
+                "credit-requests"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Demandes de crédit assignées (par défaut `ENVOYEE` + `EN_ANALYSE`)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /bank/credit-requests/{id}/decision — Accepte ou refuse une demande",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bank/credit-requests/:id/decision",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bank",
+                "credit-requests",
+                ":id",
+                "decision"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "`ACCEPTEE` crée le Crédit `EN_ATTENTE_DE_VIREMENT`. `REFUSEE` remet la commande à `CREEE`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"ACCEPTEE\",\n  \"reason\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST /bank/transfers/notice — Avis de virement banque → NanoPay",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bank/transfers/notice",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bank",
+                "transfers",
+                "notice"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "`amount` doit égaler exactement le montant à virer (prix + frais), sinon 422. `transferReference` est UNIQUE :\nun même virement n'est jamais comptabilisé deux fois. Crédit `FINANCE`, commande `FINANCEE` → `PRETE_A_LIVRER` + QR.\n",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"creditId\": \"string\",\n  \"transferReference\": \"string\",\n  \"amount\": 1\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "GET /admin/dashboard — Indicateurs globaux",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "dashboard"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Indicateurs globaux",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /admin/clients — Clients",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "clients"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Clients",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /admin/clients/{id}/status — Suspend / réactive un client",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/clients/:id/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "clients",
+                ":id",
+                "status"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Suspend / réactive un client",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"ACTIF\",\n  \"reason\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /admin/merchants — Commerçants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "merchants"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Commerçants",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /admin/merchants/{id}/status — Valide / suspend un commerçant",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/merchants/:id/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "merchants",
+                ":id",
+                "status"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Valide / suspend un commerçant",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"VALIDE\",\n  \"reason\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /admin/savings — Épargnes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/savings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "savings"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Épargnes",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /admin/savings/{id}/refund — Marque le remboursement (85 %) d'une épargne `ECHOUEE` comme versé → `REMBOURSEE`",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/savings/:id/refund",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "savings",
+                ":id",
+                "refund"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Marque le remboursement (85 %) d'une épargne `ECHOUEE` comme versé → `REMBOURSEE`",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /admin/credits — Crédits",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/credits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "credits"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Crédits",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /admin/payments — Paiements",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "payments"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Paiements",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /admin/audit-logs — Journal d'audit (date, heure, identifiant, acteur, montant, statut)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/audit-logs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "audit-logs"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Journal d'audit (date, heure, identifiant, acteur, montant, statut)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /admin/settlements — Règlements commerçants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/settlements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "settlements"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Règlements commerçants",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /admin/settlements/{id}/paid — Confirme le versement du règlement → commande `TERMINEE`, crédit `TERMINE`",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/settlements/:id/paid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "settlements",
+                ":id",
+                "paid"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Confirme le versement du règlement → commande `TERMINEE`, crédit `TERMINE`",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"string\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /admin/settings/financial — Paramètres financiers effectifs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/settings/financial",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "settings",
+                "financial"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Paramètres financiers effectifs",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /admin/settings/financial — Modifie les paramètres financiers (pénalité, commissions, paliers, durées, TTL du QR…)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/settings/financial",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "settings",
+                "financial"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Corps partiel ; toute clé inconnue est refusée (422). Tracé dans l'audit.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"savingsTiers\": [\n    {\n      \"maxAmount\": 1,\n      \"minInstallment\": 1,\n      \"maxDurationMonths\": 1\n    }\n  ],\n  \"savingsExtensionMaxMonths\": 1,\n  \"savingsPenaltyRate\": 0.15,\n  \"savingsCommissionRates\": {\n    \"tier1\": 0.1,\n    \"tier2\": 0.1,\n    \"tier3\": 0.1\n  },\n  \"creditTier1MaxMonths\": 1,\n  \"creditTier2MaxMonths\": 1,\n  \"creditExtraMonthsPerBracket\": 1,\n  \"creditBracketSize\": 1,\n  \"creditBankFeeRate\": 0.02,\n  \"creditMerchantCommissionRate\": 0.04,\n  \"qrTtlHours\": 72\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "POST /webhooks/payment — Événement de paiement Mobile Money / infrastructure interopérable",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Signature",
+                "value": ""
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "payment"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Public mais **signé** : `X-Signature` = HMAC-SHA256 hexadécimal du **corps brut** avec `PAYMENT_WEBHOOK_SECRET`.\nSignature, montant, commande, devise (`XOF`) et statut sont vérifiés avant toute écriture métier.\n`providerTransactionId` est UNIQUE : un même événement n'est jamais comptabilisé deux fois (rejeu → `duplicate: true`).\n`PENDING` puis `SUCCESS` pour la même transaction est géré. Un événement métier invalide est enregistré\n(`result: REJECTED`, avec `reason`) et renvoyé en 200 pour éviter un rejeu infini.\nLe versement est rattaché à l'épargne ou au Coffre de `orderId`.\n",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerTransactionId\": \"string\",\n  \"orderId\": \"string\",\n  \"amount\": 1,\n  \"currency\": \"XOF\",\n  \"status\": \"SUCCESS\",\n  \"payerReference\": \"string\",\n  \"timestamp\": \"2026-09-20T21:04:11.889Z\",\n  \"provider\": \"string\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "GET /notifications — Mes notifications (polling)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/notifications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Mes notifications (polling)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH /notifications/{id}/read — Marque une notification comme lue",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/:id/read",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications",
+                ":id",
+                "read"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Marque une notification comme lue",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Documents",
+      "item": [
+        {
+          "name": "GET /documents/{filename} — Document privé (propriétaire, Admin, ou Banque assignée)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/:filename",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                ":filename"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "filename",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Document privé (propriétaire, Admin, ou Banque assignée)",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /documents/{filename}/temporary-url — Crée une URL temporaire (5 min) vers un document privé",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/:filename/temporary-url",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                ":filename",
+                "temporary-url"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "filename",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Crée une URL temporaire (5 min) vers un document privé",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /documents/temp/{token} — Accès via URL temporaire signée (sans en-tête Authorization)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/temp/:token",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                "temp",
+                ":token"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "token",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Accès via URL temporaire signée (sans en-tête Authorization)",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

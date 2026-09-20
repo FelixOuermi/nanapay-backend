@@ -1,138 +1,188 @@
-import { OrderStatus } from "@prisma/client";
+import { OrderStatus, Prisma } from "@prisma/client";
 import { prisma } from "@config/prisma";
 import { AppError } from "@common/errors/AppError";
+import { PageParams, toSkipTake } from "@common/utils/response";
+import { recordAudit } from "@services/audit/auditService";
 
-interface ShopInput {
-  shopName: string;
-  city: string;
-  township: string;
-  neighborhood: string;
+interface StoreInput {
+  name: string;
+  cityId: string;
+  communeId: string;
   addressDescription?: string;
 }
 
-export async function createShop(merchantId: string, input: ShopInput) {
-  const existing = await prisma.shop.findUnique({ where: { merchantId } });
-  if (existing) {
-    throw AppError.conflict("Une boutique existe deja pour ce commercant, utilisez PUT /merchant/shop");
+// Un commercant non valide par l'Admin ne peut ni ouvrir de boutique ni publier de produit.
+async function getValidatedMerchant(merchantId: string) {
+  const merchant = await prisma.merchant.findUnique({ where: { id: merchantId }, include: { store: true } });
+  if (!merchant) {
+    throw AppError.notFound("Commercant introuvable");
   }
-
-  return prisma.shop.create({ data: { merchantId, ...input } });
+  if (merchant.status !== "VALIDE") {
+    throw AppError.forbidden("Votre compte commercant doit etre valide par l'Admin avant cette operation");
+  }
+  return merchant;
 }
 
-export async function updateShop(merchantId: string, input: ShopInput) {
-  const existing = await prisma.shop.findUnique({ where: { merchantId } });
-  if (!existing) {
-    throw AppError.notFound("Aucune boutique a mettre a jour, creez-la d'abord via POST /merchant/shop");
+async function assertLocation(cityId: string, communeId: string) {
+  const commune = await prisma.commune.findUnique({ where: { id: communeId } });
+  if (!commune || commune.cityId !== cityId) {
+    throw AppError.badRequest("Ville ou commune invalide");
   }
+}
 
-  return prisma.shop.update({ where: { merchantId }, data: input });
+export async function createStore(merchantId: string, input: StoreInput) {
+  const merchant = await getValidatedMerchant(merchantId);
+  if (merchant.store) {
+    throw AppError.conflict("Ce commercant possede deja une boutique");
+  }
+  await assertLocation(input.cityId, input.communeId);
+
+  const store = await prisma.store.create({ data: { merchantId, ...input } });
+  await recordAudit({ action: "STORE_CREATED", entityType: "store", entityId: store.id, actorRole: "MERCHANT" });
+  return store;
+}
+
+export async function updateStore(merchantId: string, input: StoreInput) {
+  const merchant = await getValidatedMerchant(merchantId);
+  if (!merchant.store) {
+    throw AppError.notFound("Aucune boutique a mettre a jour");
+  }
+  await assertLocation(input.cityId, input.communeId);
+
+  return prisma.store.update({ where: { id: merchant.store.id }, data: input });
+}
+
+export async function getMyStore(merchantId: string) {
+  const store = await prisma.store.findUnique({
+    where: { merchantId },
+    include: { city: true, commune: true, products: { where: { deletedAt: null }, include: { media: true } } },
+  });
+  if (!store) {
+    throw AppError.notFound("Aucune boutique");
+  }
+  return store;
+}
+
+async function requireStore(merchantId: string) {
+  const merchant = await getValidatedMerchant(merchantId);
+  if (!merchant.store) {
+    throw AppError.badRequest("Creez d'abord votre boutique");
+  }
+  return merchant.store;
+}
+
+async function getOwnProductOrThrow(merchantId: string, productId: string) {
+  const product = await prisma.product.findFirst({
+    where: { id: productId, deletedAt: null, store: { merchantId } },
+  });
+  // 404 (pas 403) : ne confirme pas l'existence du produit d'un autre commercant.
+  if (!product) {
+    throw AppError.notFound("Produit introuvable");
+  }
+  return product;
 }
 
 interface CreateProductInput {
   title: string;
   description?: string;
   price: number;
-  initialStock: number;
-}
-
-async function getOwnShopOrThrow(merchantId: string) {
-  const shop = await prisma.shop.findUnique({ where: { merchantId } });
-  if (!shop) {
-    throw AppError.badRequest("Creez d'abord votre boutique via POST /merchant/shop");
-  }
-  return shop;
+  stock: number;
+  isPublished?: boolean;
 }
 
 export async function createProduct(merchantId: string, input: CreateProductInput) {
-  const shop = await getOwnShopOrThrow(merchantId);
-
-  return prisma.product.create({
-    data: {
-      shopId: shop.id,
-      title: input.title,
-      description: input.description,
-      price: input.price,
-      initialStock: input.initialStock,
-      remainingStock: input.initialStock,
-      // Un article sans stock n'a rien a faire dans le Market des sa creation.
-      isVisible: input.initialStock > 0,
-    },
-  });
-}
-
-interface UpdateProductInput {
-  title?: string;
-  description?: string;
-  price?: number;
-  remainingStock?: number;
-}
-
-async function getOwnProductOrThrow(merchantId: string, productId: string) {
-  const product = await prisma.product.findUnique({
-    where: { id: productId },
-    include: { shop: true },
+  const store = await requireStore(merchantId);
+  const product = await prisma.product.create({
+    data: { storeId: store.id, ...input, isPublished: input.isPublished ?? true },
   });
 
-  // 404 (pas 403) pour ne pas confirmer a un commercant l'existence du produit d'un autre.
-  if (!product || product.shop.merchantId !== merchantId) {
-    throw AppError.notFound("Article introuvable");
-  }
-
+  await recordAudit({
+    action: "PRODUCT_CREATED",
+    entityType: "product",
+    entityId: product.id,
+    actorRole: "MERCHANT",
+    amount: product.price,
+  });
   return product;
 }
 
-export async function updateProduct(merchantId: string, productId: string, input: UpdateProductInput) {
+export async function updateProduct(
+  merchantId: string,
+  productId: string,
+  input: { title?: string; description?: string; stock?: number; isPublished?: boolean }
+) {
+  await getValidatedMerchant(merchantId);
+  await getOwnProductOrThrow(merchantId, productId);
+  return prisma.product.update({ where: { id: productId }, data: input });
+}
+
+const OPEN_ORDER_STATUSES: OrderStatus[] = ["CREEE", "FINANCEMENT_EN_COURS", "FINANCEE", "PRETE_A_LIVRER", "LIVREE"];
+
+/**
+ * Suppression selon les regles : impossible tant qu'une commande non terminee reference
+ * le produit (le client a un financement en cours ou un retrait a effectuer). Sinon,
+ * suppression logique : l'historique des commandes terminees reste intact.
+ */
+export async function deleteProduct(merchantId: string, productId: string) {
+  await getValidatedMerchant(merchantId);
   await getOwnProductOrThrow(merchantId, productId);
 
-  return prisma.product.update({
-    where: { id: productId },
-    data: {
-      title: input.title,
-      description: input.description,
-      price: input.price,
-      remainingStock: input.remainingStock,
-      // Le quota disponible pilote automatiquement la visibilite dans le Market.
-      ...(input.remainingStock !== undefined ? { isVisible: input.remainingStock > 0 } : {}),
-    },
+  const openOrders = await prisma.order.count({
+    where: { productId, status: { in: OPEN_ORDER_STATUSES }, cancelledAt: null },
   });
-}
-
-interface AddProductMediaInput {
-  photoUrls: string[];
-  spotUrls: string[];
-}
-
-export async function addProductMedia(merchantId: string, productId: string, input: AddProductMediaInput) {
-  await getOwnProductOrThrow(merchantId, productId);
-
-  const mediaRows = [
-    ...input.photoUrls.map((mediaUrl) => ({ productId, mediaUrl, mediaType: "PHOTO" as const })),
-    ...input.spotUrls.map((mediaUrl) => ({ productId, mediaUrl, mediaType: "SPOT_PUB" as const })),
-  ];
-
-  if (mediaRows.length === 0) {
-    throw AppError.badRequest("Aucun fichier recu (champs attendus: photos, spots)");
+  if (openOrders > 0) {
+    throw AppError.conflict(`Suppression impossible : ${openOrders} commande(s) en cours sur ce produit`);
   }
 
-  await prisma.productMedia.createMany({ data: mediaRows });
+  await prisma.product.update({ where: { id: productId }, data: { deletedAt: new Date(), isPublished: false } });
+  await recordAudit({ action: "PRODUCT_DELETED", entityType: "product", entityId: productId, actorRole: "MERCHANT" });
+}
 
+export async function addProductMedia(
+  merchantId: string,
+  productId: string,
+  files: { filename: string; type: "PHOTO" | "SPOT_PUB" }[]
+) {
+  await getOwnProductOrThrow(merchantId, productId);
+  if (files.length === 0) {
+    throw AppError.badRequest("Aucun fichier fourni");
+  }
+
+  await prisma.productMedia.createMany({
+    data: files.map((file) => ({ productId, mediaUrl: `/media/${file.filename}`, mediaType: file.type })),
+  });
   return prisma.productMedia.findMany({ where: { productId } });
 }
 
-// Sans filtre explicite : "ventes en cours et commandes pretes" (cf. cahier, section 7).
-const DEFAULT_ORDER_STATUSES: OrderStatus[] = ["EN_COURS", "PRET_A_LIVRER"];
+export async function listMerchantOrders(merchantId: string, page: PageParams, status?: OrderStatus) {
+  const where: Prisma.OrderWhereInput = { store: { merchantId }, ...(status ? { status } : {}) };
 
-export async function listMerchantOrders(merchantId: string, status?: OrderStatus) {
-  return prisma.order.findMany({
-    where: {
-      product: { shop: { merchantId } },
-      status: status ?? { in: DEFAULT_ORDER_STATUSES },
-    },
-    include: {
-      product: { select: { title: true, price: true } },
-      client: { select: { firstName: true, lastName: true, phoneNumber: true } },
-      savingsPlan: { select: { currentSavedAmount: true, targetAmount: true, dueDate: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  const [items, total] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      include: {
+        product: { select: { id: true, title: true } },
+        client: { select: { firstName: true, lastName: true, phoneNumber: true } },
+        settlement: { select: { status: true, netAmount: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      ...toSkipTake(page),
+    }),
+    prisma.order.count({ where }),
+  ]);
+
+  return { items, total };
+}
+
+export async function listSettlements(merchantId: string, page: PageParams) {
+  const [items, total] = await Promise.all([
+    prisma.merchantSettlement.findMany({
+      where: { merchantId },
+      include: { order: { select: { orderNumber: true, product: { select: { title: true } } } } },
+      orderBy: { createdAt: "desc" },
+      ...toSkipTake(page),
+    }),
+    prisma.merchantSettlement.count({ where: { merchantId } }),
+  ]);
+  return { items, total };
 }

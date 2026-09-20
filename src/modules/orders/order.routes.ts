@@ -1,44 +1,56 @@
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import { requireAuth } from "@common/middleware/auth";
 import { requireRole } from "@common/middleware/rbac";
-import { uploadPrivateDocument } from "@common/middleware/upload";
-import { sensitiveActionRateLimiter } from "@common/middleware/rateLimiter";
 import { validate } from "@common/middleware/validate";
 import { asyncHandler } from "@common/utils/asyncHandler";
-import { createOrderSchema, extendSavingsSchema, orderIdParamSchema } from "./order.validation";
-import * as orderController from "./order.controller";
-import * as bankCreditController from "@modules/bankCredits/bankCredit.controller";
-import { submitDossierSchema, bankCreditTermsSchema } from "@modules/bankCredits/bankCredit.validation";
+import { AppError } from "@common/errors/AppError";
+import { sendData, sendPage } from "@common/utils/response";
+import { createOrderSchema, selectFinancingSchema, listOrdersQuerySchema, orderIdParamSchema } from "./order.validation";
+import * as orderService from "./order.service";
 
 export const orderRouter = Router();
 
 orderRouter.use(requireAuth, requireRole("CLIENT"));
 
-orderRouter.post("/", validate({ body: createOrderSchema }), asyncHandler(orderController.createOrder));
-orderRouter.get("/:id", validate({ params: orderIdParamSchema }), asyncHandler(orderController.getOrder));
+export function clientId(req: Request): string {
+  if (!req.user?.clientId) {
+    throw AppError.unauthorized();
+  }
+  return req.user.clientId;
+}
+
 orderRouter.post(
-  "/:id/savings/extend",
-  validate({ params: orderIdParamSchema, body: extendSavingsSchema }),
-  asyncHandler(orderController.extendSavings)
+  "/",
+  validate({ body: createOrderSchema }),
+  asyncHandler(async (req: Request, res: Response) => sendData(res, await orderService.createOrder(clientId(req), req.body.productId), 201))
 );
+
+orderRouter.get(
+  "/",
+  validate({ query: listOrdersQuerySchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { page, limit, status } = req.query as unknown as { page: number; limit: number; status?: never };
+    const { items, total } = await orderService.listOrders(clientId(req), { page, limit }, status);
+    sendPage(res, items, { page, limit }, total);
+  })
+);
+
+orderRouter.get(
+  "/:id",
+  validate({ params: orderIdParamSchema }),
+  asyncHandler(async (req: Request, res: Response) => sendData(res, await orderService.getOrderDetail(clientId(req), req.params.id)))
+);
+
 orderRouter.post(
-  "/:id/bank-credit",
-  sensitiveActionRateLimiter,
-  uploadPrivateDocument.fields([
-    { name: "bankAuthorization", maxCount: 1 },
-    { name: "paySlips", maxCount: 1 },
-  ]),
-  validate({ params: orderIdParamSchema, body: submitDossierSchema }),
-  asyncHandler(bankCreditController.submitDossier)
+  "/:id/select-financing",
+  validate({ params: orderIdParamSchema, body: selectFinancingSchema }),
+  asyncHandler(async (req: Request, res: Response) =>
+    sendData(res, await orderService.selectFinancing(clientId(req), req.params.id, req.body.mode))
+  )
 );
-orderRouter.post(
-  "/:id/bank-credit/terms",
-  sensitiveActionRateLimiter,
-  validate({ params: orderIdParamSchema, body: bankCreditTermsSchema }),
-  asyncHandler(bankCreditController.setTerms)
-);
+
 orderRouter.get(
   "/:id/qr",
   validate({ params: orderIdParamSchema }),
-  asyncHandler(orderController.getOrderQrCode)
+  asyncHandler(async (req: Request, res: Response) => sendData(res, await orderService.getOrderQr(clientId(req), req.params.id)))
 );

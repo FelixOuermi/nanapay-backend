@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { AppError } from "@common/errors/AppError";
+import { sendData } from "@common/utils/response";
 import * as authService from "./auth.service";
 
 interface UploadedFiles {
@@ -7,6 +8,8 @@ interface UploadedFiles {
   cnibVerso?: Express.Multer.File[];
 }
 
+// On stocke le nom de fichier seul : la destination est fixe par la config d'upload et
+// reconstituee au moment de servir le fichier via un endpoint controle (modules/documents).
 function requireCnibFiles(files: unknown): { cnibRectoUrl: string; cnibVersoUrl: string } {
   const { cnibRecto, cnibVerso } = (files ?? {}) as UploadedFiles;
 
@@ -14,46 +17,36 @@ function requireCnibFiles(files: unknown): { cnibRectoUrl: string; cnibVersoUrl:
     throw AppError.badRequest("Les photos recto et verso de la CNIB sont requises");
   }
 
-  // On stocke le nom de fichier seul (pas le chemin complet, dependant de l'OS) : la
-  // destination est fixe par la config d'upload et reconstituee au moment de servir
-  // le fichier via un endpoint controle (cf. modules/documents).
   return { cnibRectoUrl: cnibRecto[0].filename, cnibVersoUrl: cnibVerso[0].filename };
 }
 
-export async function registerClient(req: Request, res: Response): Promise<void> {
-  const { cnibRectoUrl, cnibVersoUrl } = requireCnibFiles(req.files);
-
-  const result = await authService.registerClient({ ...req.body, cnibRectoUrl, cnibVersoUrl });
-  res.status(201).json(result);
-}
-
-export async function registerMerchant(req: Request, res: Response): Promise<void> {
-  const { cnibRectoUrl, cnibVersoUrl } = requireCnibFiles(req.files);
-
-  const result = await authService.registerMerchant({ ...req.body, cnibRectoUrl, cnibVersoUrl });
-  res.status(201).json(result);
+export async function register(req: Request, res: Response): Promise<void> {
+  const result = await authService.register(req.body, requireCnibFiles(req.files));
+  sendData(res, result, 201);
 }
 
 export async function login(req: Request, res: Response): Promise<void> {
-  const { email, password } = req.body;
-  const result = await authService.login(email, password);
-  res.status(200).json(result);
+  sendData(res, await authService.login(req.body.email, req.body.password));
 }
 
 export async function refresh(req: Request, res: Response): Promise<void> {
-  const { refreshToken } = req.body;
-  const result = await authService.refresh(refreshToken);
-  res.status(200).json(result);
+  sendData(res, await authService.refresh(req.body.refreshToken));
 }
 
 export async function logout(req: Request, res: Response): Promise<void> {
-  const { refreshToken } = req.body;
-  await authService.logout(refreshToken);
+  await authService.logout(req.body.refreshToken);
   res.status(204).send();
 }
 
 export async function recovery(req: Request, res: Response): Promise<void> {
-  const { email } = req.body;
-  await authService.requestAccountRecovery(email);
-  res.status(200).json({ message: "Si un compte existe avec cet e-mail, des instructions ont ete envoyees" });
+  await authService.requestAccountRecovery(req.body.email);
+  sendData(res, { message: "Si un compte existe avec cet e-mail, des instructions ont ete envoyees" });
+}
+
+export async function getMe(req: Request, res: Response): Promise<void> {
+  sendData(res, await authService.getMe(req.user!.id));
+}
+
+export async function updateMe(req: Request, res: Response): Promise<void> {
+  sendData(res, await authService.updateMe(req.user!.id, req.user!.role, req.body));
 }

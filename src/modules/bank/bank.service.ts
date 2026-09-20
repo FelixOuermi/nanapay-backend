@@ -1,169 +1,178 @@
-import { prisma } from "@config/prisma";
+import { CreditProfileStatus, CreditRequestStatus, Prisma } from "@prisma/client";
+import { prisma, INTERACTIVE_TRANSACTION_OPTIONS } from "@config/prisma";
 import { AppError } from "@common/errors/AppError";
-import { generateQrToken } from "@services/qr/qrService";
+import { PageParams, toSkipTake } from "@common/utils/response";
 import { recordAudit } from "@services/audit/auditService";
 import { notifyAdmins, notifyUser } from "@services/notification/notificationService";
+import { getFinancialParams } from "@services/financial/settingsService";
+import { markOrderFinancedAndReady } from "@modules/orders/orderWorkflow";
 
-const CREDIT_REQUEST_INCLUDE = {
-  order: {
-    include: {
-      product: { include: { shop: { include: { merchant: true } } } },
-      client: true,
-    },
-  },
-} as const;
+// ------------------------------------------------------------------
+// Profils de credit
+// ------------------------------------------------------------------
 
-async function getOwnBankCreditOrThrow(bankId: string, bankCreditId: string) {
-  const bankCredit = await prisma.bankCredit.findUnique({
-    where: { id: bankCreditId },
-    include: CREDIT_REQUEST_INCLUDE,
-  });
-
-  // 404 (pas 403) : ne confirme pas a une banque l'existence d'un dossier qui ne lui est pas assigne.
-  if (!bankCredit || bankCredit.bankId !== bankId) {
-    throw AppError.notFound("Dossier de credit introuvable");
-  }
-
-  return bankCredit;
-}
-
-export async function listCreditRequests(bankId: string) {
-  return prisma.bankCredit.findMany({
-    where: { bankId, approvalStatus: "EN_ATTENTE" },
-    include: CREDIT_REQUEST_INCLUDE,
-    orderBy: { createdAt: "asc" },
-  });
-}
-
-export async function getCreditRequestDetail(bankId: string, bankCreditId: string) {
-  return getOwnBankCreditOrThrow(bankId, bankCreditId);
-}
-
-export async function approveCreditRequest(bankId: string, bankCreditId: string) {
-  const bankCredit = await getOwnBankCreditOrThrow(bankId, bankCreditId);
-
-  if (bankCredit.approvalStatus !== "EN_ATTENTE") {
-    throw AppError.conflict(`Ce dossier a deja ete traite (statut: ${bankCredit.approvalStatus})`);
-  }
-
-  await prisma.$transaction([
-    prisma.bankCredit.update({
-      where: { id: bankCredit.id },
-      data: { approvalStatus: "APPROUVE", approvalDate: new Date() },
+export async function listCreditProfiles(bankId: string, page: PageParams, status: CreditProfileStatus = "EN_ANALYSE") {
+  const where: Prisma.CreditProfileWhereInput = { bankId, status };
+  const [items, total] = await Promise.all([
+    prisma.creditProfile.findMany({
+      where,
+      include: { client: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } } },
+      orderBy: { updatedAt: "asc" },
+      ...toSkipTake(page),
     }),
-    // Autorisation de prelevement validee : reutilisable pour les futurs achats du client
-    // sans re-upload (cf. cahier, section 6).
-    prisma.client.update({ where: { id: bankCredit.order.client.id }, data: { bankDossierStatus: "VALIDE" } }),
+    prisma.creditProfile.count({ where }),
   ]);
-
-  await notifyAdmins(
-    "Dossier de credit approuve",
-    `La banque a approuve le dossier de credit pour la commande ${bankCredit.order.id}.`,
-    { bankCreditId: bankCredit.id, orderId: bankCredit.order.id }
-  );
-
-  await recordAudit({
-    userId: bankId,
-    action: "BANK_CREDIT_APPROVED",
-    entityType: "bank_credit",
-    entityId: bankCredit.id,
-  });
-
-  await notifyUser(
-    bankCredit.order.client.userId,
-    "Dossier de credit approuve",
-    "Votre demande de credit bancaire a ete approuvee par la banque, en attente du virement vers NanaPay."
-  );
-
-  return { id: bankCredit.id, status: "APPROUVE" as const };
+  return { items, total };
 }
 
-export async function rejectCreditRequest(bankId: string, bankCreditId: string, reason?: string) {
-  const bankCredit = await getOwnBankCreditOrThrow(bankId, bankCreditId);
+export async function decideCreditProfile(
+  bankId: string,
+  actorUserId: string,
+  profileId: string,
+  decision: "VALIDE" | "REFUSE",
+  reason?: string
+) {
+  const profile = await prisma.creditProfile.findUnique({ where: { id: profileId }, include: { client: { select: { userId: true } } } });
 
-  if (bankCredit.approvalStatus !== "EN_ATTENTE") {
-    throw AppError.conflict(`Ce dossier a deja ete traite (statut: ${bankCredit.approvalStatus})`);
+  // 404 (pas 403) : ne confirme pas l'existence d'un profil assigne a une autre banque.
+  if (!profile || profile.bankId !== bankId) {
+    throw AppError.notFound("Profil credit introuvable");
+  }
+  if (profile.status !== "EN_ANALYSE") {
+    throw AppError.conflict(`Ce profil a deja ete traite (statut : ${profile.status})`);
   }
 
-  await prisma.$transaction([
-    prisma.bankCredit.update({ where: { id: bankCredit.id }, data: { approvalStatus: "REJETTE" } }),
-    prisma.order.update({ where: { id: bankCredit.orderId }, data: { status: "ANNULE" } }),
-  ]);
-
-  await notifyAdmins(
-    "Dossier de credit rejete",
-    `La banque a rejete le dossier de credit pour la commande ${bankCredit.order.id}.`,
-    { bankCreditId: bankCredit.id, orderId: bankCredit.order.id, reason }
-  );
+  const flipped = await prisma.creditProfile.updateMany({
+    where: { id: profileId, status: "EN_ANALYSE" },
+    data: { status: decision, decisionReason: reason, decidedAt: new Date() },
+  });
+  if (flipped.count === 0) {
+    throw AppError.conflict("Ce profil a deja ete traite");
+  }
 
   await recordAudit({
-    userId: bankId,
-    action: "BANK_CREDIT_REJECTED",
-    entityType: "bank_credit",
-    entityId: bankCredit.id,
+    userId: actorUserId,
+    actorRole: "BANK",
+    action: decision === "VALIDE" ? "CREDIT_PROFILE_VALIDATED" : "CREDIT_PROFILE_REFUSED",
+    entityType: "credit_profile",
+    entityId: profileId,
+    status: decision,
     metadata: { reason },
   });
 
   await notifyUser(
-    bankCredit.order.client.userId,
-    "Dossier de credit rejete",
-    reason ? `Votre demande de credit a ete rejetee : ${reason}` : "Votre demande de credit a ete rejetee."
+    profile.client.userId,
+    decision === "VALIDE" ? "Profil credit valide" : "Profil credit refuse",
+    decision === "VALIDE"
+      ? "Votre profil bancaire est valide : Coffre et Credit sont disponibles."
+      : `Votre profil credit a ete refuse${reason ? ` : ${reason}` : "."}`,
+    { creditProfileId: profileId }
   );
 
-  return { id: bankCredit.id, status: "REJETTE" as const };
+  return { id: profileId, status: decision };
 }
 
-export async function executeTransfer(bankId: string, bankCreditId: string) {
-  const bankCredit = await getOwnBankCreditOrThrow(bankId, bankCreditId);
+// ------------------------------------------------------------------
+// Demandes de credit
+// ------------------------------------------------------------------
 
-  if (bankCredit.approvalStatus !== "APPROUVE") {
-    throw AppError.conflict("Le dossier doit d'abord etre approuve avant tout virement");
-  }
-
-  if (bankCredit.transferStatus !== "NON_EFFECTUE") {
-    throw AppError.conflict(`Virement deja traite (statut: ${bankCredit.transferStatus})`);
-  }
-
-  const qrCodeToken = generateQrToken();
-
-  await prisma.$transaction([
-    prisma.bankCredit.update({
-      where: { id: bankCredit.id },
-      data: { transferStatus: "VIREMENT_BANQUE_EFFECTUE" },
+export async function listCreditRequests(bankId: string, page: PageParams, status?: CreditRequestStatus) {
+  const where: Prisma.CreditRequestWhereInput = {
+    bankId,
+    status: status ?? { in: ["ENVOYEE", "EN_ANALYSE"] },
+  };
+  const [items, total] = await Promise.all([
+    prisma.creditRequest.findMany({
+      where,
+      include: {
+        client: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } },
+        order: { select: { orderNumber: true, product: { select: { title: true } } } },
+        credit: true,
+      },
+      orderBy: { createdAt: "asc" },
+      ...toSkipTake(page),
     }),
-    // Credit Bancaire approuve + virement recu => financement valide (cf. cahier, section 11).
-    prisma.order.update({
-      where: { id: bankCredit.orderId },
-      data: { status: "PRET_A_LIVRER", qrCodeToken },
-    }),
+    prisma.creditRequest.count({ where }),
   ]);
+  return { items, total };
+}
 
-  const merchant = bankCredit.order.product.shop.merchant;
+// ------------------------------------------------------------------
+// Avis de virement banque -> NanoPay
+// ------------------------------------------------------------------
 
-  await notifyAdmins(
-    "Virement Banque -> NanaPay recu",
-    `Virement de ${bankCredit.totalAmountToWire} FCFA recu pour le client ${bankCredit.order.client.firstName} ${bankCredit.order.client.lastName}, commercant ${merchant.firstName} ${merchant.lastName}.`,
-    {
-      bankCreditId: bankCredit.id,
-      orderId: bankCredit.orderId,
-      amount: bankCredit.totalAmountToWire,
-      corisMoneyNumber: merchant.corisMoneyNumber,
+interface TransferNoticeInput {
+  creditId: string;
+  transferReference: string;
+  amount: number;
+}
+
+/**
+ * POST /bank/transfers/notice : la banque signale avoir vire les fonds. Le montant doit
+ * correspondre exactement au montant a virer calcule par le backend (prix + frais). La
+ * reference de virement est UNIQUE : un meme avis n'est jamais comptabilise deux fois.
+ * Credit FINANCE, commande FINANCEE puis PRETE_A_LIVRER avec jeton QR.
+ */
+export async function noticeTransfer(bankId: string, actorUserId: string, input: TransferNoticeInput) {
+  const credit = await prisma.credit.findUnique({ where: { id: input.creditId }, include: { creditRequest: true, order: true } });
+
+  if (!credit || credit.creditRequest.bankId !== bankId) {
+    throw AppError.notFound("Credit introuvable");
+  }
+  if (credit.status !== "EN_ATTENTE_DE_VIREMENT") {
+    throw AppError.conflict(`Aucun virement attendu pour ce credit (statut : ${credit.status})`);
+  }
+  if (input.amount !== credit.totalAmountToWire) {
+    throw AppError.unprocessable(`Montant incorrect : ${credit.totalAmountToWire} FCFA attendus`, {
+      expected: credit.totalAmountToWire,
+      received: input.amount,
+    });
+  }
+
+  const params = await getFinancialParams();
+
+  await prisma.$transaction(async (tx) => {
+    const flipped = await tx.credit.updateMany({
+      where: { id: credit.id, status: "EN_ATTENTE_DE_VIREMENT" },
+      data: { status: "FINANCE", transferReference: input.transferReference, transferNotedAt: new Date() },
+    });
+    if (flipped.count === 0) {
+      throw AppError.conflict("Ce virement a deja ete enregistre");
     }
-  );
 
-  await recordAudit({
-    userId: bankId,
-    action: "BANK_TRANSFER_EXECUTED",
-    entityType: "bank_credit",
-    entityId: bankCredit.id,
-    metadata: { amount: bankCredit.totalAmountToWire },
+    await tx.payment.create({
+      data: {
+        orderId: credit.orderId,
+        kind: "BANK_TRANSFER",
+        amount: input.amount,
+        provider: "BANK",
+        providerTransactionId: input.transferReference,
+        status: "CONFIRME",
+        confirmedAt: new Date(),
+      },
+    });
+
+    await recordAudit(
+      {
+        userId: actorUserId,
+        actorRole: "BANK",
+        action: "BANK_TRANSFER_NOTICED",
+        entityType: "credit",
+        entityId: credit.id,
+        amount: input.amount,
+        status: "FINANCE",
+        metadata: { transferReference: input.transferReference, orderId: credit.orderId },
+      },
+      tx
+    );
+
+    await markOrderFinancedAndReady(tx, credit.orderId, params.qrTtlHours, { userId: actorUserId, role: "BANK" });
+  }, INTERACTIVE_TRANSACTION_OPTIONS);
+
+  await notifyAdmins("Virement banque recu", `Virement de ${input.amount} FCFA annonce (commande ${credit.order.orderNumber}).`, {
+    creditId: credit.id,
+    transferReference: input.transferReference,
   });
 
-  await notifyUser(
-    bankCredit.order.client.userId,
-    "Financement valide",
-    "Le virement de la banque a ete recu, votre code QR est disponible pour le retrait en boutique."
-  );
-
-  return { id: bankCredit.id, transferStatus: "VIREMENT_BANQUE_EFFECTUE" as const };
+  return { creditId: credit.id, status: "FINANCE" as const, orderId: credit.orderId };
 }
