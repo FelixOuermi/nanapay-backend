@@ -110,7 +110,7 @@ docs/              openapi.yaml, collection Postman
 
 ## Déploiement (Render / staging)
 
-`render.yaml` exécute `npm ci`, le build, `prisma migrate deploy` puis `npm run seed` (référentiel villes/communes, idempotent). Variables à renseigner : `DATABASE_URL`, `PAYMENT_WEBHOOK_SECRET`, `CORS_ORIGIN` (URL du frontend), SMTP ; les secrets JWT sont générés. Le frontend pointe `VITE_API_URL` vers `https://<service>.onrender.com/api`.
+`render.yaml` exécute `npm ci`, le build, `prisma migrate deploy` puis `npm run seed:demo` (référentiel villes/communes + comptes de démonstration, idempotent — à remplacer par `npm run seed` en production). Variables à renseigner : `DATABASE_URL`, `PAYMENT_WEBHOOK_SECRET`, `CORS_ORIGIN` (URL du frontend), SMTP ; les secrets JWT sont générés. Le frontend pointe `VITE_API_URL` vers `https://<service>.onrender.com/api`.
 
 ## Ce qui reste à brancher (hors périmètre du code)
 

@@ -3,7 +3,7 @@ services:
     name: nanapay-backend
     runtime: node
     plan: free
-    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy && npm run seed
+    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy && npm run seed:demo
     startCommand: npm start
     envVars:
       - key: NODE_ENV
